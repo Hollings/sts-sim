@@ -24,9 +24,23 @@ internal sealed class SimServer
     public string WebRoot { get; }
 
     private readonly HttpListener _listener = new();
-    private readonly List<WebSocket> _sockets = new();
+    private readonly List<SocketState> _sockets = new();
     private readonly object _socketsLock = new();
     private CancellationTokenSource? _currentJobCts;
+
+    private sealed class SocketState
+    {
+        public required WebSocket Ws { get; init; }
+        // Bounded queue: drops oldest events if the consumer (browser) can't
+        // keep up. Keeps the server fast even when the UI is slow.
+        public readonly System.Threading.Channels.Channel<byte[]> Outbox =
+            System.Threading.Channels.Channel.CreateBounded<byte[]>(
+                new System.Threading.Channels.BoundedChannelOptions(256)
+                {
+                    FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
+                    SingleReader = true,
+                });
+    }
 
     public SimServer(int port, string webRoot)
     {
@@ -284,7 +298,25 @@ internal sealed class SimServer
         }
         var wsCtx = await ctx.AcceptWebSocketAsync(null);
         var ws = wsCtx.WebSocket;
-        lock (_socketsLock) _sockets.Add(ws);
+        var state = new SocketState { Ws = ws };
+        lock (_socketsLock) _sockets.Add(state);
+
+        // Per-socket writer pump: serializes SendAsync calls so we never call
+        // SendAsync concurrently on the same connection (which corrupts WS
+        // framing) and drops oldest events if the browser can't keep up.
+        var writer = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var bytes in state.Outbox.Reader.ReadAllAsync())
+                {
+                    if (ws.State != WebSocketState.Open) break;
+                    await ws.SendAsync(bytes, WebSocketMessageType.Text, true, default);
+                }
+            }
+            catch { /* connection drop */ }
+        });
+
         try
         {
             var buffer = new byte[1024];
@@ -298,24 +330,27 @@ internal sealed class SimServer
         catch { /* connection drop */ }
         finally
         {
-            lock (_socketsLock) _sockets.Remove(ws);
+            state.Outbox.Writer.TryComplete();
+            lock (_socketsLock) _sockets.Remove(state);
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", default); } catch { }
             ws.Dispose();
         }
     }
 
-    private async Task BroadcastEvent(object payload)
+    private Task BroadcastEvent(object payload)
     {
         var json = JsonSerializer.Serialize(payload, JsonOpts);
         var bytes = Encoding.UTF8.GetBytes(json);
-        List<WebSocket> snapshot;
+        List<SocketState> snapshot;
         lock (_socketsLock) snapshot = _sockets.ToList();
-        foreach (var ws in snapshot)
+        foreach (var state in snapshot)
         {
-            if (ws.State != WebSocketState.Open) continue;
-            try { await ws.SendAsync(bytes, WebSocketMessageType.Text, true, default); }
-            catch { /* drop dead conns */ }
+            if (state.Ws.State != WebSocketState.Open) continue;
+            // TryWrite never blocks; under DropOldest we evict the oldest queued
+            // payload if the browser is too slow.
+            state.Outbox.Writer.TryWrite(bytes);
         }
+        return Task.CompletedTask;
     }
 
     // ─── helpers ───────────────────────────────────────────────────────────

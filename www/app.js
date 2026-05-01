@@ -203,6 +203,22 @@ function connectWs() {
   ws.onclose = () => setTimeout(connectWs, 1000);
 }
 
+// Coalesce chart redraws into a single rAF tick — Chart.js updates are
+// expensive once you have 200+ datapoints; doing them per-event makes
+// big runs visibly stutter. We just buffer and let the browser repaint.
+let chartsDirty = false;
+let bestPending = null;
+function scheduleRedraw() {
+  if (chartsDirty || bestPending) return;
+  // (intentionally fall through; the rAF below schedules)
+}
+function tick() {
+  if (chartsDirty) { updateCharts(); chartsDirty = false; }
+  if (bestPending) { renderBestCombat(bestPending); bestPending = null; }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
 function handleEvent(e) {
   switch (e.type) {
     case 'started':
@@ -217,7 +233,8 @@ function handleEvent(e) {
       $('stop-btn').disabled = false;
       break;
     case 'newBest':
-      renderBestCombat(e);
+      // Don't re-render synchronously — coalesce into next rAF.
+      bestPending = e;
       break;
     case 'seed':
       bestSeries.push({ x: e.index, y: e.bestForSeed });
@@ -227,13 +244,17 @@ function handleEvent(e) {
       runningMean = e.runningAvg;
       const pct = ((e.index + 1) / e.total) * 100;
       $('prog').style.width = pct + '%';
-      $('status').textContent = `Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${(e.totalRuns / (e.elapsedMs / 1000)).toFixed(0)} runs/s`;
-      $('stats').innerHTML = `
-        <div class="stat"><span class="label">Running avg-of-best</span><span class="value">${fmt(e.runningAvg)} ± ${fmt(e.ci95)}</span></div>
-        <div class="stat"><span class="label">Last seed best</span><span class="value">${e.bestForSeed}</span></div>
-        <div class="stat"><span class="label">Total runs</span><span class="value">${e.totalRuns}</span></div>`;
-      // Throttle chart updates to every 5th seed for big runs.
-      if (e.index % 3 === 0 || e.index + 1 === e.total) updateCharts();
+      // Cheap text updates can stay per-event.
+      $('status').textContent = `Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${(e.totalRuns / Math.max(1, e.elapsedMs / 1000)).toFixed(0)} runs/s`;
+      // Mark charts dirty; the rAF tick will redraw at most once per frame.
+      chartsDirty = true;
+      // Stat tiles get updated less often (once per ~10 seeds is fine).
+      if (e.index % 10 === 0 || e.index + 1 === e.total) {
+        $('stats').innerHTML = `
+          <div class="stat"><span class="label">Running avg-of-best</span><span class="value">${fmt(e.runningAvg)} ± ${fmt(e.ci95)}</span></div>
+          <div class="stat"><span class="label">Last seed best</span><span class="value">${e.bestForSeed}</span></div>
+          <div class="stat"><span class="label">Total runs</span><span class="value">${e.totalRuns}</span></div>`;
+      }
       break;
     case 'done':
       updateCharts();
