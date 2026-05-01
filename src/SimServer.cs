@@ -32,14 +32,30 @@ internal sealed class SimServer
     {
         Port = port;
         WebRoot = webRoot;
-        _listener.Prefixes.Add($"http://localhost:{port}/");
+        // Bind both IPv4 loopback and IPv6 loopback explicitly. Firefox often
+        // resolves "localhost" to ::1 first; if we only bound IPv4, the browser
+        // gets a connection refusal even though curl (which prefers IPv4) works.
         _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        _listener.Prefixes.Add($"http://[::1]:{port}/");
+        _listener.Prefixes.Add($"http://localhost:{port}/");
     }
 
     public void Start()
     {
-        _listener.Start();
-        Console.WriteLine($"\n  StS2Sim server listening at http://localhost:{Port}/");
+        try
+        {
+            _listener.Start();
+        }
+        catch (HttpListenerException ex)
+        {
+            Console.Error.WriteLine($"\n  ERROR: could not bind port {Port}: {ex.Message}");
+            Console.Error.WriteLine($"         Likely something else is using the port, or this user lacks URL ACL permission.");
+            Console.Error.WriteLine($"         Try: STS2SIM_PORT=52325 dotnet run    (or close whatever is on 52324)");
+            throw;
+        }
+        Console.WriteLine($"\n  StS2Sim server listening at:");
+        foreach (var prefix in _listener.Prefixes)
+            Console.WriteLine($"    {prefix}");
         _ = AcceptLoop();
     }
 
