@@ -60,16 +60,21 @@ internal sealed class DamagePerTurnSim
                 var handSnapshot = hand.Cards.Select(c => CardLabel(c)).ToList();
 
                 var hpBefore = harness.Dummy.CurrentHp;
-                int energyLeft = Energy;
+                var pcs = harness.Player.PlayerCombatState!;
+                // Reset PCS.Energy = Energy at turn start. PCS.Energy is the source
+                // of truth — cards like Offering / Bloodletting modify it via
+                // PlayerCmd.GainEnergy/LoseEnergy, and we read it back to give
+                // the policy an accurate budget.
+                SetEnergy(pcs, Energy);
                 var played = new List<string>();
 
-                while (energyLeft > 0)
+                while (pcs.Energy > 0)
                 {
-                    var card = Policy.ChooseCard(harness, energyLeft, policyRng);
+                    var card = Policy.ChooseCard(harness, pcs.Energy, policyRng);
                     if (card == null) break;
 
                     var cost = card.EnergyCost.GetResolved();
-                    if (cost > energyLeft) break; // policy lied; bail
+                    if (cost > pcs.Energy) break; // policy lied; bail
 
                     var resources = new ResourceInfo
                     {
@@ -81,8 +86,12 @@ internal sealed class DamagePerTurnSim
                     var target = card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.Self
                         ? harness.Player.Creature
                         : harness.Dummy;
+                    // OnPlayWrapper does NOT auto-debit PCS.Energy — that's done
+                    // by SpendResources upstream of the play action. So we deduct
+                    // the cost ourselves; cards that gain energy mid-OnPlay
+                    // (Offering, Bloodletting) will be visible in the next iter.
+                    pcs.LoseEnergy(cost);
                     await card.OnPlayWrapper(harness.Ctx, target, isAutoPlay: true, resources, skipCardPileVisuals: true);
-                    energyLeft -= cost;
                     played.Add(CardLabel(card));
                 }
 
@@ -132,6 +141,13 @@ internal sealed class DamagePerTurnSim
             draw.RemoveInternal(top);
             hand.AddInternal(top);
         }
+    }
+
+    private static void SetEnergy(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, int amount)
+    {
+        var prop = typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState)
+            .GetProperty("Energy", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        prop!.SetValue(pcs, amount);
     }
 
     /// <summary>"CARD.STRIKE_IRONCLAD" + upgrade level → "Strike Ironclad+"</summary>

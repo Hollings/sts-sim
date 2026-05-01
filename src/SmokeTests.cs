@@ -38,6 +38,7 @@ internal static class SmokeTests
             Test_Inflame_BoostsLaterStrike,
             Test_BashPlus_Deals10,
             Test_StrikePlus_Deals9,
+            Test_Offering_GivesEnergyAndDraw,
         };
 
         var results = new List<TestResult>();
@@ -122,6 +123,40 @@ internal static class SmokeTests
                     return $"expected Vulnerable on dummy, got [{string.Join(",", h.Dummy.Powers.Select(p => p.Id.Entry))}]";
                 return null;
             });
+
+    private static async Task<TestResult> Test_Offering_GivesEnergyAndDraw()
+    {
+        // Offering: lose 6 HP, gain 2 energy, draw 3, exhaust.
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new List<Type>
+        {
+            typeof(Offering),
+            typeof(StrikeIronclad), typeof(StrikeIronclad), typeof(StrikeIronclad), typeof(StrikeIronclad),
+        });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            SetEnergy(pcs, 0); // start with zero so we can verify Offering gave +2
+            var offering = pcs.DrawPile.Cards.OfType<Offering>().First();
+            pcs.DrawPile.RemoveInternal(offering);
+            pcs.Hand.AddInternal(offering);
+
+            var hpBefore = h.Player.Creature.CurrentHp;
+            var handBefore = pcs.Hand.Cards.Count;
+
+            await offering.OnPlayWrapper(h.Ctx, h.Player.Creature, isAutoPlay: true,
+                new ResourceInfo { EnergySpent = 0, EnergyValue = 0, StarsSpent = 0, StarValue = 0 },
+                skipCardPileVisuals: true);
+
+            // Check: HP -6, energy = 2 (was 0 + gain 2), 3 cards drawn (-1 played offering)
+            var hpDelta = hpBefore - h.Player.Creature.CurrentHp;
+            if (hpDelta != 6) return new TestResult("Offering gives +2 energy and draws 3", false, $"HP delta expected 6, got {hpDelta}");
+            if (pcs.Energy != 2) return new TestResult("Offering gives +2 energy and draws 3", false, $"Energy expected 2, got {pcs.Energy}");
+            // hand was {Offering}; played -> Play pile or Exhaust; +3 from Draw → total 3
+            if (pcs.Hand.Cards.Count != 3) return new TestResult("Offering gives +2 energy and draws 3", false, $"Hand expected 3, got {pcs.Hand.Cards.Count}");
+            return new TestResult("Offering gives +2 energy and draws 3", true, null);
+        }
+        finally { Harness.EndCombat(); }
+    }
 
     private static async Task<TestResult> Test_BashPlus_Deals10()
     {
