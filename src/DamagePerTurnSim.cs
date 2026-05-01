@@ -15,6 +15,8 @@ internal sealed class DamagePerTurnSim
     public int HandSize { get; init; } = 5;
     public int Energy { get; init; } = 3;
     public int Turns { get; init; } = 5;
+    public IPlayPolicy Policy { get; init; } = new GreedyAttackPolicy();
+    public uint? PolicyRngSeed { get; init; } = null;
 
     public sealed record TurnResult(int Turn, int Damage, IReadOnlyList<string> CardsPlayed);
 
@@ -35,11 +37,12 @@ internal sealed class DamagePerTurnSim
         return results;
     }
 
-    private async Task<TrialResult> RunSingleTrial(uint shuffleSeed)
+    public async Task<TrialResult> RunSingleTrial(uint shuffleSeed)
     {
         var harness = Harness.BeginCombat<MegaCrit.Sts2.Core.Models.Characters.Ironclad>(
             deckOverride: Deck,
             shuffleSeed: shuffleSeed);
+        var policyRng = new Random((int)(PolicyRngSeed ?? shuffleSeed ^ 0xDEAD_BEEFu));
         try
         {
             var hand = harness.Player.PlayerCombatState!.Hand;
@@ -56,33 +59,28 @@ internal sealed class DamagePerTurnSim
                 int energyLeft = Energy;
                 var played = new List<string>();
 
-                // Greedy: play any attack card we can afford, left-to-right.
-                bool playedAny;
-                do
+                while (energyLeft > 0)
                 {
-                    playedAny = false;
-                    var cards = hand.Cards.ToList();
-                    foreach (var card in cards)
-                    {
-                        if (card.Type != CardType.Attack) continue;
-                        var cost = card.EnergyCost.GetResolved();
-                        if (cost > energyLeft) continue;
+                    var card = Policy.ChooseCard(harness, energyLeft, policyRng);
+                    if (card == null) break;
 
-                        var resources = new ResourceInfo
-                        {
-                            EnergySpent = cost,
-                            EnergyValue = cost,
-                            StarsSpent = 0,
-                            StarValue = 0,
-                        };
-                        await card.OnPlayWrapper(harness.Ctx, harness.Dummy, isAutoPlay: true, resources, skipCardPileVisuals: true);
-                        energyLeft -= cost;
-                        played.Add(card.Id.Entry);
-                        playedAny = true;
-                        break; // hand changed; restart enumeration
-                    }
+                    var cost = card.EnergyCost.GetResolved();
+                    if (cost > energyLeft) break; // policy lied; bail
+
+                    var resources = new ResourceInfo
+                    {
+                        EnergySpent = cost,
+                        EnergyValue = cost,
+                        StarsSpent = 0,
+                        StarValue = 0,
+                    };
+                    var target = card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.Self
+                        ? harness.Player.Creature
+                        : harness.Dummy;
+                    await card.OnPlayWrapper(harness.Ctx, target, isAutoPlay: true, resources, skipCardPileVisuals: true);
+                    energyLeft -= cost;
+                    played.Add(card.Id.Entry);
                 }
-                while (playedAny && energyLeft > 0);
 
                 var hpAfter = harness.Dummy.CurrentHp;
                 turnResults.Add(new TurnResult(turn + 1, hpBefore - hpAfter, played));

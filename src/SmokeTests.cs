@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Models.Powers;
 
 namespace StS2Sim;
 
@@ -34,6 +35,7 @@ internal static class SmokeTests
             Test_Feed_ExhaustsAfterPlay,
             Test_Bash_AppliesVulnerable,
             Test_StrikeIntoVulnerable_Deals9,
+            Test_Inflame_BoostsLaterStrike,
         };
 
         var results = new List<TestResult>();
@@ -118,6 +120,36 @@ internal static class SmokeTests
                     return $"expected Vulnerable on dummy, got [{string.Join(",", h.Dummy.Powers.Select(p => p.Id.Entry))}]";
                 return null;
             });
+
+    private static async Task<TestResult> Test_Inflame_BoostsLaterStrike()
+    {
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new List<Type> { typeof(Inflame), typeof(StrikeIronclad) });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            SetEnergy(pcs, 3);
+
+            var inflame = pcs.DrawPile.Cards.OfType<Inflame>().First();
+            var strike = pcs.DrawPile.Cards.OfType<StrikeIronclad>().First();
+            pcs.DrawPile.RemoveInternal(inflame); pcs.Hand.AddInternal(inflame);
+            pcs.DrawPile.RemoveInternal(strike); pcs.Hand.AddInternal(strike);
+
+            var resources = new ResourceInfo { EnergySpent = 1, EnergyValue = 1, StarsSpent = 0, StarValue = 0 };
+
+            int hp1 = h.Dummy.CurrentHp;
+            await inflame.OnPlayWrapper(h.Ctx, h.Player.Creature, isAutoPlay: true, resources, skipCardPileVisuals: true);
+            int inflameDmg = hp1 - h.Dummy.CurrentHp;
+
+            int hp2 = h.Dummy.CurrentHp;
+            await strike.OnPlayWrapper(h.Ctx, h.Dummy, isAutoPlay: true, resources, skipCardPileVisuals: true);
+            int strikeDmg = hp2 - h.Dummy.CurrentHp;
+
+            if (inflameDmg != 0) return new TestResult("Inflame: 0 dmg + Strength → Strike does 8 (6+2)", false, $"Inflame dmg expected 0, got {inflameDmg}");
+            if (strikeDmg != 8) return new TestResult("Inflame: 0 dmg + Strength → Strike does 8 (6+2)", false, $"Strike-after-Inflame expected 8, got {strikeDmg}");
+            return new TestResult("Inflame: 0 dmg + Strength → Strike does 8 (6+2)", true, null);
+        }
+        finally { Harness.EndCombat(); }
+    }
 
     private static async Task<TestResult> Test_StrikeIntoVulnerable_Deals9()
     {
