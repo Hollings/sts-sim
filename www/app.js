@@ -194,13 +194,28 @@ async function loadDeck() {
 // ─── WebSocket events ────────────────────────────────────────────────────
 
 let ws;
+let wsRetries = 0;
 function connectWs() {
   ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    wsRetries = 0;
+    if ($('verdict').className.includes('error')) {
+      $('verdict').className = 'verdict idle';
+      $('verdict').textContent = 'Reconnected. Click "Run Sim" to start.';
+    }
+  };
   ws.onmessage = ev => {
     const e = JSON.parse(ev.data);
     handleEvent(e);
   };
-  ws.onclose = () => setTimeout(connectWs, 1000);
+  ws.onclose = () => {
+    wsRetries++;
+    if (wsRetries > 3) {
+      $('verdict').className = 'verdict error';
+      $('verdict').textContent = `Lost server connection. Restart StS2Sim.exe and reload this page.`;
+    }
+    setTimeout(connectWs, Math.min(wsRetries * 1000, 5000));
+  };
 }
 
 // Coalesce chart redraws into a single rAF tick — Chart.js updates are
@@ -324,9 +339,19 @@ $('run-btn').onclick = async () => {
     turns: +$('cfg-turns').value,
     epsilon: +$('cfg-eps').value,
   };
-  await fetch('/api/sim/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const r = await fetch('/api/sim/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      $('verdict').className = 'verdict error';
+      $('verdict').textContent = `Server returned ${r.status}: ${text.slice(0, 200)}`;
+    }
+  } catch (e) {
+    $('verdict').className = 'verdict error';
+    $('verdict').textContent = `Can't reach server (is StS2Sim.exe running?): ${e.message}`;
+  }
 };
-$('stop-btn').onclick = () => fetch('/api/sim/stop', { method: 'POST' });
+$('stop-btn').onclick = () => fetch('/api/sim/stop', { method: 'POST' }).catch(() => {});
 $('refresh-btn').onclick = () => loadDeck();
 
 // ─── Boot ────────────────────────────────────────────────────────────────
