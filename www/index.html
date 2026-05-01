@@ -44,8 +44,10 @@
   .stat .label { color: var(--fg-dim); }
   .stat .value { font-weight: bold; font-variant-numeric: tabular-nums; }
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; }
+  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; position: relative; height: 260px; }
   .chart-box h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--accent-2); }
+  .hist-box { height: 180px; }
+  .chart-box canvas { max-height: calc(100% - 24px); }
   .progress-bar { height: 6px; background: #21455a; border-radius: 3px; overflow: hidden; margin: 8px 0; }
   .progress-bar > div { height: 100%; background: var(--accent-2); transition: width 0.2s; }
   .status { font-size: 12px; color: var(--fg-dim); }
@@ -55,6 +57,17 @@
   .verdict.done { background: #1a4329; color: var(--good); }
   .verdict.error { background: #4a1c1c; color: var(--bad); }
   .empty { color: var(--fg-dim); font-style: italic; padding: 8px; }
+  .best-headline { font-size: 11px; color: var(--good); font-weight: normal; margin-left: 8px; letter-spacing: 0; text-transform: none; }
+  .best-combat { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .turn-card { background: var(--bg-2); border-left: 3px solid var(--accent-2); padding: 8px 12px; border-radius: 3px; }
+  .turn-card .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .turn-card .turn-num { font-weight: bold; color: var(--accent-2); }
+  .turn-card .turn-dmg { font-variant-numeric: tabular-nums; }
+  .turn-card .label { font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 4px 0 2px; }
+  .turn-card .pill-list { display: flex; flex-wrap: wrap; gap: 3px; }
+  .pill { background: rgba(33,69,90,0.7); padding: 2px 6px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
+  .pill.played { background: var(--accent); color: var(--fg); }
+  .pill.dim { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -101,7 +114,10 @@
     </div>
 
     <h2>Distribution of Per-Seed Bests</h2>
-    <div class="chart-box"><canvas id="chart-hist" height="180"></canvas></div>
+    <div class="chart-box hist-box"><canvas id="chart-hist"></canvas></div>
+
+    <h2>Best Combat <span id="best-headline" class="best-headline"></span></h2>
+    <div id="best-combat" class="best-combat"><div class="empty">No sim run yet.</div></div>
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

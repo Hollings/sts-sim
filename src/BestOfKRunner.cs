@@ -27,6 +27,8 @@ internal sealed class BestOfKRunner
     public bool Quiet { get; init; } = false;
     /// <summary>Fires after each seed completes K samples — for live UI updates.</summary>
     public Action<SeedProgress>? OnSeedDone { get; init; }
+    /// <summary>Fires when a new best-of-best damage trial is found (full per-turn breakdown).</summary>
+    public Action<DamagePerTurnSim.TrialResult>? OnNewBest { get; init; }
     /// <summary>Optional cancellation — UI Stop button hooks here.</summary>
     public System.Threading.CancellationToken Cancellation { get; init; } = default;
 
@@ -47,6 +49,7 @@ internal sealed class BestOfKRunner
         int completed = 0;
         long totalRuns = 0;
         var lastPrint = TimeSpan.Zero;
+        DamagePerTurnSim.TrialResult? globalBest = null;
 
         if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={Policy.Name} | seeds={Seeds} × K={InnerSamples} ===");
 
@@ -75,6 +78,11 @@ internal sealed class BestOfKRunner
                 {
                     seedBest = result.TotalDamage;
                     firstFoundAt = k + 1;
+                }
+                if (globalBest == null || result.TotalDamage > globalBest.TotalDamage)
+                {
+                    globalBest = result;
+                    OnNewBest?.Invoke(result);
                 }
             }
             perSeedBest[s] = seedBest;

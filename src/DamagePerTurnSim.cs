@@ -18,7 +18,7 @@ internal sealed class DamagePerTurnSim
     public IPlayPolicy Policy { get; init; } = new GreedyAttackPolicy();
     public uint? PolicyRngSeed { get; init; } = null;
 
-    public sealed record TurnResult(int Turn, int Damage, IReadOnlyList<string> CardsPlayed);
+    public sealed record TurnResult(int Turn, int Damage, IReadOnlyList<string> Hand, IReadOnlyList<string> CardsPlayed);
 
     public sealed record TrialResult(uint Seed, IReadOnlyList<TurnResult> Turns)
     {
@@ -55,6 +55,10 @@ internal sealed class DamagePerTurnSim
             {
                 FillHand(hand, draw, discard, HandSize);
 
+                // Snapshot hand BEFORE play decisions so the UI can show "you were
+                // dealt these 5 cards on this turn" alongside what got played.
+                var handSnapshot = hand.Cards.Select(c => CardLabel(c)).ToList();
+
                 var hpBefore = harness.Dummy.CurrentHp;
                 int energyLeft = Energy;
                 var played = new List<string>();
@@ -79,11 +83,11 @@ internal sealed class DamagePerTurnSim
                         : harness.Dummy;
                     await card.OnPlayWrapper(harness.Ctx, target, isAutoPlay: true, resources, skipCardPileVisuals: true);
                     energyLeft -= cost;
-                    played.Add(card.Id.Entry);
+                    played.Add(CardLabel(card));
                 }
 
                 var hpAfter = harness.Dummy.CurrentHp;
-                turnResults.Add(new TurnResult(turn + 1, hpBefore - hpAfter, played));
+                turnResults.Add(new TurnResult(turn + 1, hpBefore - hpAfter, handSnapshot, played));
 
                 // End-of-turn: dump hand to discard.
                 foreach (var c in hand.Cards.ToList())
@@ -128,6 +132,13 @@ internal sealed class DamagePerTurnSim
             draw.RemoveInternal(top);
             hand.AddInternal(top);
         }
+    }
+
+    /// <summary>"CARD.STRIKE_IRONCLAD" + upgrade level → "Strike Ironclad+"</summary>
+    private static string CardLabel(MegaCrit.Sts2.Core.Models.CardModel card)
+    {
+        var pretty = CardIdResolver.PrettyName(card.Id.ToString());
+        return card.IsUpgraded ? pretty + (card.CurrentUpgradeLevel == 1 ? "+" : "+" + card.CurrentUpgradeLevel) : pretty;
     }
 
     private static async Task FireAfterTurnEnd(Harness.CombatHarness h, MegaCrit.Sts2.Core.Combat.CombatSide side)

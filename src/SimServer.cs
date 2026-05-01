@@ -231,6 +231,20 @@ internal sealed class SimServer
                         totalRuns = p.TotalRuns,
                         elapsedMs = (long)p.Elapsed.TotalMilliseconds,
                     }),
+                    OnNewBest = trial => _ = BroadcastEvent(new
+                    {
+                        type = "newBest",
+                        seed = trial.Seed,
+                        totalDamage = trial.TotalDamage,
+                        avgPerTurn = trial.AvgPerTurn,
+                        turns = trial.Turns.Select(t => new
+                        {
+                            turn = t.Turn,
+                            damage = t.Damage,
+                            hand = t.Hand,
+                            played = t.CardsPlayed,
+                        }),
+                    }),
                 };
                 var summary = await runner.Run();
                 await BroadcastEvent(new

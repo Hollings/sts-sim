@@ -10,6 +10,21 @@ let bestSeries = [];           // [{x, y}] — per-seed best damage
 let avgSeries = [];            // [{x, y}] — running avg
 let ciUpper = [];
 let ciLower = [];
+let runningMean = null;        // for the horizontal reference line
+
+// Color a damage value on a red→yellow→green gradient relative to the run's range.
+function damageColor(y, min, max) {
+  if (max === min) return '#d4a142';
+  const t = (y - min) / (max - min); // 0 = worst, 1 = best
+  // bad (red 8b1913) → mid (yellow d4a142) → good (green 5fb04f)
+  const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+  if (t < 0.5) {
+    const u = t * 2;
+    return `rgb(${lerp(0x8b, 0xd4, u)},${lerp(0x19, 0xa1, u)},${lerp(0x13, 0x42, u)})`;
+  }
+  const u = (t - 0.5) * 2;
+  return `rgb(${lerp(0xd4, 0x5f, u)},${lerp(0xa1, 0xb0, u)},${lerp(0x42, 0x4f, u)})`;
+}
 
 // ─── Init charts ─────────────────────────────────────────────────────────
 
@@ -19,31 +34,60 @@ function initCharts() {
   Chart.defaults.color = fontColor;
   Chart.defaults.borderColor = gridColor;
 
+  // Plugin to draw a horizontal reference line at the running mean.
+  const meanLinePlugin = {
+    id: 'meanLine',
+    afterDatasetsDraw(chart) {
+      if (runningMean == null) return;
+      const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+      const yPx = y.getPixelForValue(runningMean);
+      if (yPx < y.top || yPx > y.bottom) return;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(242,240,196,0.5)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, yPx);
+      ctx.lineTo(right, yPx);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(242,240,196,0.7)';
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'right';
+      ctx.fillText(`mean ${runningMean.toFixed(1)}`, right - 4, yPx - 4);
+      ctx.restore();
+    },
+  };
+
   bestChart = new Chart($('chart-best'), {
     type: 'scatter',
-    data: { datasets: [{ data: [], backgroundColor: '#d4a142', radius: 2 }] },
+    data: { datasets: [{ data: [], pointBackgroundColor: [], pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7 }] },
     options: {
       animation: false,
+      maintainAspectRatio: false,
       scales: {
-        x: { title: { display: true, text: 'seed index' } },
-        y: { title: { display: true, text: 'best damage' }, beginAtZero: true },
+        x: { title: { display: true, text: 'seed index' }, ticks: { precision: 0 } },
+        y: { title: { display: true, text: 'best damage / 5 turns' }, beginAtZero: false, grace: '5%' },
       },
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `seed ${c.parsed.x}: ${c.parsed.y} dmg` } } },
     },
+    plugins: [meanLinePlugin],
   });
 
   avgChart = new Chart($('chart-avg'), {
-    type: 'line',
+    // scatter with line: keeps x-axis numeric (line type defaults to category, which
+    // squashes everything to the left as new points come in).
+    type: 'scatter',
     data: { datasets: [
-      { label: 'CI upper', data: [], borderColor: 'rgba(212,161,66,0.3)', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(212,161,66,0.1)', pointRadius: 0 },
-      { label: 'CI lower', data: [], borderColor: 'rgba(212,161,66,0.3)', borderWidth: 1, fill: false, pointRadius: 0 },
-      { label: 'Running avg-of-best', data: [], borderColor: '#d4a142', borderWidth: 2, fill: false, pointRadius: 0, tension: 0.1 },
+      { label: 'CI upper', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(212,161,66,0.12)', pointRadius: 0, showLine: true },
+      { label: 'CI lower', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: false, pointRadius: 0, showLine: true },
+      { label: 'Running avg', data: [], borderColor: '#d4a142', borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
     ]},
     options: {
       animation: false,
+      maintainAspectRatio: false,
       scales: {
-        x: { title: { display: true, text: 'seed index' } },
-        y: { title: { display: true, text: 'damage / N turns' }, beginAtZero: false },
+        x: { title: { display: true, text: 'seed index' }, ticks: { precision: 0 } },
+        y: { title: { display: true, text: 'avg-of-best damage' }, beginAtZero: false, grace: '5%' },
       },
       plugins: { legend: { display: false } },
     },
@@ -51,12 +95,13 @@ function initCharts() {
 
   histChart = new Chart($('chart-hist'), {
     type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: '#8b1913' }] },
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
     options: {
       animation: false,
+      maintainAspectRatio: false,
       scales: {
-        x: { title: { display: true, text: 'damage bucket' } },
-        y: { title: { display: true, text: 'seed count' }, beginAtZero: true },
+        x: { title: { display: true, text: 'damage bucket (per-seed best)' }, grid: { display: false } },
+        y: { title: { display: true, text: 'seeds' }, beginAtZero: true, ticks: { precision: 0 } },
       },
       plugins: { legend: { display: false } },
     },
@@ -64,7 +109,14 @@ function initCharts() {
 }
 
 function updateCharts() {
-  bestChart.data.datasets[0].data = bestSeries;
+  // Per-seed scatter: color each dot by its damage relative to the run's range.
+  if (bestSeries.length > 0) {
+    const ys = bestSeries.map(p => p.y);
+    const min = Math.min(...ys);
+    const max = Math.max(...ys);
+    bestChart.data.datasets[0].data = bestSeries;
+    bestChart.data.datasets[0].pointBackgroundColor = bestSeries.map(p => damageColor(p.y, min, max));
+  }
   bestChart.update('none');
 
   avgChart.data.datasets[0].data = ciUpper;
@@ -72,7 +124,7 @@ function updateCharts() {
   avgChart.data.datasets[2].data = avgSeries;
   avgChart.update('none');
 
-  // Build histogram with ~12 buckets.
+  // Histogram with ~12 buckets, colored by damage gradient.
   if (bestSeries.length > 1) {
     const ys = bestSeries.map(p => p.y);
     const min = Math.min(...ys);
@@ -82,7 +134,11 @@ function updateCharts() {
       const w = (max - min) / buckets;
       const counts = new Array(buckets).fill(0);
       const labels = [];
-      for (let i = 0; i < buckets; i++) labels.push(`${(min + i * w).toFixed(0)}-${(min + (i + 1) * w).toFixed(0)}`);
+      const colors = [];
+      for (let i = 0; i < buckets; i++) {
+        labels.push(`${Math.round(min + i * w)}`);
+        colors.push(damageColor(min + (i + 0.5) * w, min, max));
+      }
       ys.forEach(y => {
         let i = Math.floor((y - min) / w);
         if (i >= buckets) i = buckets - 1;
@@ -90,6 +146,7 @@ function updateCharts() {
       });
       histChart.data.labels = labels;
       histChart.data.datasets[0].data = counts;
+      histChart.data.datasets[0].backgroundColor = colors;
       histChart.update('none');
     }
   }
@@ -97,10 +154,13 @@ function updateCharts() {
 
 function resetCharts() {
   bestSeries = []; avgSeries = []; ciUpper = []; ciLower = [];
+  runningMean = null;
   bestChart.data.datasets[0].data = [];
+  bestChart.data.datasets[0].pointBackgroundColor = [];
   avgChart.data.datasets.forEach(ds => ds.data = []);
   histChart.data.labels = [];
   histChart.data.datasets[0].data = [];
+  histChart.data.datasets[0].backgroundColor = [];
   bestChart.update('none'); avgChart.update('none'); histChart.update('none');
 }
 
@@ -147,6 +207,8 @@ function handleEvent(e) {
   switch (e.type) {
     case 'started':
       resetCharts();
+      $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
+      $('best-headline').textContent = '';
       $('verdict').className = 'verdict running';
       $('verdict').textContent = `Running: ${e.seeds} seeds × ${e.k} samples each, ${e.turns} turns, ε=${e.epsilon}`;
       $('status').textContent = 'Started…';
@@ -154,11 +216,15 @@ function handleEvent(e) {
       $('run-btn').disabled = true;
       $('stop-btn').disabled = false;
       break;
+    case 'newBest':
+      renderBestCombat(e);
+      break;
     case 'seed':
       bestSeries.push({ x: e.index, y: e.bestForSeed });
       avgSeries.push({ x: e.index, y: e.runningAvg });
       ciUpper.push({ x: e.index, y: e.runningAvg + e.ci95 });
       ciLower.push({ x: e.index, y: e.runningAvg - e.ci95 });
+      runningMean = e.runningAvg;
       const pct = ((e.index + 1) / e.total) * 100;
       $('prog').style.width = pct + '%';
       $('status').textContent = `Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${(e.totalRuns / (e.elapsedMs / 1000)).toFixed(0)} runs/s`;
@@ -195,6 +261,37 @@ function handleEvent(e) {
       $('stop-btn').disabled = true;
       break;
   }
+}
+
+// ─── Best combat renderer ───────────────────────────────────────────────
+
+function renderBestCombat(e) {
+  $('best-headline').textContent = `${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${e.seed.toString(16).toUpperCase()}`;
+  const cells = e.turns.map(t => {
+    // Mark cards that were also played (greys out the dead ones in hand).
+    const played = new Set(t.played);
+    const handPills = t.hand.map(c => {
+      const wasPlayed = played.has(c);
+      return `<span class="pill ${wasPlayed ? 'played' : 'dim'}">${escapeHtml(c)}</span>`;
+    }).join('');
+    const playedPills = t.played.map(c => `<span class="pill played">${escapeHtml(c)}</span>`).join('');
+    return `
+      <div class="turn-card">
+        <div class="head">
+          <span class="turn-num">Turn ${t.turn}</span>
+          <span class="turn-dmg">${t.damage} dmg</span>
+        </div>
+        <div class="label">Hand drawn</div>
+        <div class="pill-list">${handPills || '<span class="pill dim">empty</span>'}</div>
+        <div class="label">Played in order</div>
+        <div class="pill-list">${playedPills || '<span class="pill dim">none</span>'}</div>
+      </div>`;
+  }).join('');
+  $('best-combat').innerHTML = cells;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // ─── Buttons ─────────────────────────────────────────────────────────────
