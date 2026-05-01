@@ -20,8 +20,18 @@ cd StS2Sim
 dotnet run -c Release -p:STS2GameDir="C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
 ```
 
-Currently `Sim.RunSmokeTest()` is the entry — runs assertion smoke tests, then
-the K-vs-accuracy experiment, then the headline A/B comparison.
+Default mode: bootstraps + starts the embedded HTTP server on port 52324
+and opens the browser. The UI reads the freshest `current_run.save`,
+shows your deck, and lets you run sim batches with live-streaming charts.
+
+Console-only experiment mode (no UI):
+```bash
+dotnet run -c Release -- experiment
+```
+Runs the legacy headline A/B + K-vs-accuracy console output.
+
+The exe is fully standalone — no mod required, no Python, no game running.
+Just needs a `current_run.save` somewhere under `%APPDATA%\SlayTheSpire2\`.
 
 ## How the bootstrap works
 
@@ -73,7 +83,11 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | `PlayPolicy.cs` | `IPlayPolicy` interface. Concrete: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. |
 | `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. |
 | `ConvergenceRunner.cs` | Anytime mode. Runs forever, prints best-so-far + running average + per-trial CSV. Useful for debugging policy behavior; not the primary tool. |
-| `Sim.cs` | The "experiment script". Wires up which decks/policies to compare. Currently: K-vs-accuracy curve + Defend-for-Inflame swap A/B. |
+| `Sim.cs` | The "experiment script". Wires up which decks/policies to compare. Currently: K-vs-accuracy curve + Defend-for-Inflame swap A/B. Only runs in `-- experiment` mode. |
+| `SaveFileReader.cs` | Walks `%APPDATA%\SlayTheSpire2\steam\<steamid>\{,modded/}profile1\saves\current_run*.save`, picks freshest by mtime, parses player[0].deck. Pure file IO + System.Text.Json — no game state needed. |
+| `CardIdResolver.cs` | `"CARD.STRIKE_IRONCLAD"` → `typeof(StrikeIronclad)` via `ModelDb.GetByIdOrNull`. Requires `Harness.Bootstrap()` first. |
+| `SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static), `GET /api/deck`, `POST /api/sim/start`, `POST /api/sim/stop`, `WS /ws`. Per-seed events stream to all connected sockets. |
+| `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Three charts: per-seed scatter, running avg with 95% CI band, damage histogram. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
 
 ## The algorithm we settled on
 
@@ -193,10 +207,24 @@ applies +2 Strength, next Strike does 8 (6+2).
 
 ## What to build next (roughly in order of value)
 
-1. **Polished CLI**: take JSON deck specs → output verdict + CI. The button.
+1. **Card-swap UI**: in the web frontend, click a card in the deck to remove,
+   pick another to add, run an A/B against current. The actual "should I add
+   this card?" feature.
 2. **Adaptive K**: stop sampling per-seed when CI < threshold instead of fixed K.
    Saves 5-10x compute on easy verdicts.
 3. **Smarter base policy**: hand-coded heuristics like "play Powers turn 1",
    "apply Vulnerable before attacking". Could shrink ε-needed and tighten CI.
 4. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-3 feel slow.
 5. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
+
+## UI notes (frontend)
+
+- WebSocket auto-reconnects on disconnect (1-second backoff).
+- Charts throttle updates to every 3rd seed event for big runs to keep the
+  browser responsive. Final update happens on `done`.
+- The "freshest save wins" rule means if the user has both modded and unmodded
+  profiles, whichever was last touched is what we read. Could add a profile
+  picker later, but the typical user only plays one mode at a time.
+- Card IDs in the save file (e.g. `CARD.STRIKE_IRONCLAD`) match `card.Id`
+  from the game DLL exactly. If we ever see an "unknown card id" error,
+  either the game added a new card or our `ModelDb.Init` didn't cover it.
