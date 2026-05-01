@@ -25,12 +25,26 @@ internal sealed class BestOfKRunner
     public int InnerSamples { get; init; } = 100;
     public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromSeconds(2);
     public bool Quiet { get; init; } = false;
+    /// <summary>Fires after each seed completes K samples — for live UI updates.</summary>
+    public Action<SeedProgress>? OnSeedDone { get; init; }
+    /// <summary>Optional cancellation — UI Stop button hooks here.</summary>
+    public System.Threading.CancellationToken Cancellation { get; init; } = default;
+
+    public sealed record SeedProgress(
+        int SeedIndex,
+        int TotalSeeds,
+        int BestForSeed,
+        double RunningAvg,
+        double RunningStdErr,
+        long TotalRuns,
+        TimeSpan Elapsed);
 
     public async Task<Summary> Run()
     {
         var sw = Stopwatch.StartNew();
         var perSeedBest = new int[Seeds];
         var perSeedSampleK = new int[Seeds]; // K at which best was first found, for convergence inspection
+        int completed = 0;
         long totalRuns = 0;
         var lastPrint = TimeSpan.Zero;
 
@@ -65,6 +79,16 @@ internal sealed class BestOfKRunner
             }
             perSeedBest[s] = seedBest;
             perSeedSampleK[s] = firstFoundAt;
+            completed = s + 1;
+
+            if (OnSeedDone != null)
+            {
+                var bestsSoFar = perSeedBest.Take(s + 1).ToList();
+                var rAvg = bestsSoFar.Average();
+                var rVar = s == 0 ? 0 : bestsSoFar.Select(x => Math.Pow(x - rAvg, 2)).Sum() / s;
+                var rStdErr = s == 0 ? 0 : Math.Sqrt(rVar) / Math.Sqrt(s + 1);
+                OnSeedDone(new SeedProgress(s, Seeds, seedBest, rAvg, rStdErr, totalRuns, sw.Elapsed));
+            }
 
             if (!Quiet && sw.Elapsed - lastPrint >= ProgressInterval)
             {
@@ -72,18 +96,22 @@ internal sealed class BestOfKRunner
                 Console.WriteLine($"  t={sw.Elapsed.TotalSeconds:F1}s  seeds={s + 1}/{Seeds}  runs={totalRuns}  avg-of-best={seenBests.Average():F1}  best-of-best={seenBests.Max()}  rate={totalRuns / sw.Elapsed.TotalSeconds:F0}/s");
                 lastPrint = sw.Elapsed;
             }
+
+            if (Cancellation.IsCancellationRequested) break;
         }
         sw.Stop();
 
-        var avg = perSeedBest.Average();
-        var best = perSeedBest.Max();
-        var worstSeedBest = perSeedBest.Min();
-        var medianFoundAt = perSeedSampleK.OrderBy(x => x).ToList()[Seeds / 2];
-        var maxFoundAt = perSeedSampleK.Max();
-        var variance = perSeedBest.Select(x => Math.Pow(x - avg, 2)).Sum() / (Seeds - 1);
+        var bests = perSeedBest.Take(completed).ToList();
+        var ks = perSeedSampleK.Take(completed).OrderBy(x => x).ToList();
+        var avg = bests.Count == 0 ? 0 : bests.Average();
+        var best = bests.Count == 0 ? 0 : bests.Max();
+        var worstSeedBest = bests.Count == 0 ? 0 : bests.Min();
+        var medianFoundAt = ks.Count == 0 ? 0 : ks[ks.Count / 2];
+        var maxFoundAt = ks.Count == 0 ? 0 : ks.Max();
+        var variance = bests.Count <= 1 ? 0 : bests.Select(x => Math.Pow(x - avg, 2)).Sum() / (bests.Count - 1);
         var stdDev = Math.Sqrt(variance);
-        var stdErr = stdDev / Math.Sqrt(Seeds);     // SEM — uncertainty of the mean
-        var ci95 = 1.96 * stdErr;                    // 95% confidence interval half-width
+        var stdErr = bests.Count == 0 ? 0 : stdDev / Math.Sqrt(bests.Count);
+        var ci95 = 1.96 * stdErr;
 
         if (!Quiet)
         {
@@ -93,11 +121,12 @@ internal sealed class BestOfKRunner
             Console.WriteLine($"  Std deviation across seeds: {stdDev:F2} (variance source: shuffle luck)");
             Console.WriteLine($"  Best/worst seed:    {best} / {worstSeedBest}");
             Console.WriteLine($"  Convergence: median seed found its best at K={medianFoundAt}, slowest at K={maxFoundAt}");
+
+            if (maxFoundAt < InnerSamples * 0.5)
+                Console.WriteLine($"  → All seeds converged early; K={InnerSamples} was overkill. Try K={maxFoundAt * 2}.");
+            else if (maxFoundAt >= InnerSamples - 5)
+                Console.WriteLine($"  → Some seeds were still improving at K={InnerSamples}. Bump K higher.");
         }
-        if (maxFoundAt < InnerSamples * 0.5)
-            Console.WriteLine($"  → All seeds converged early; K={InnerSamples} was overkill. Try K={maxFoundAt * 2}.");
-        else if (maxFoundAt >= InnerSamples - 5)
-            Console.WriteLine($"  → Some seeds were still improving at K={InnerSamples}. Bump K higher.");
 
         return new Summary
         {
