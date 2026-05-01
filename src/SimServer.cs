@@ -253,7 +253,8 @@ internal sealed class SimServer
             }
             catch (Exception ex)
             {
-                await BroadcastEvent(new { type = "error", message = ex.Message });
+                Console.Error.WriteLine("[SimServer] sim run threw:\n" + ex);
+                await BroadcastEvent(new { type = "error", message = ex.Message, stack = ex.ToString() });
             }
         }, ct);
     }

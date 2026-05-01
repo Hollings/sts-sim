@@ -46,6 +46,16 @@ internal static class GodotShims
             type: typeof(Godot.Time),
             methodName: "GetTicksMsec",
             prefix: typeof(GodotShims).GetMethod(nameof(Time_GetTicksMsec_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+
+        // CardPileCmd.Shuffle calls Engine.GetMainLoop() for animation pacing
+        // (sleeps between adding cards back to draw pile). We replace the whole
+        // method with a synchronous shuffle that does the same logical work
+        // without ever touching SceneTree.
+        PatchPrefix(
+            harmony,
+            type: typeof(MegaCrit.Sts2.Core.Commands.CardPileCmd),
+            methodName: "Shuffle",
+            prefix: typeof(GodotShims).GetMethod(nameof(CardPileCmd_Shuffle_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
     }
 
     private static void PatchPrefix(Harmony harmony, Type? type, string methodName, MethodInfo prefix)
@@ -82,6 +92,57 @@ internal static class GodotShims
     {
         __result = 0;
         return false;
+    }
+
+    // Replacement for CardPileCmd.Shuffle that skips the per-card animation wait
+    // (which calls Engine.GetMainLoop() and crashes outside Godot). Logic mirrors
+    // the original: pull discards, shuffle by player's RNG, re-add to draw pile.
+    private static bool CardPileCmd_Shuffle_Prefix(
+        MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext,
+        MegaCrit.Sts2.Core.Entities.Players.Player player,
+        ref System.Threading.Tasks.Task __result)
+    {
+        __result = ShuffleSync(player);
+        return false;
+    }
+
+    private static System.Threading.Tasks.Task ShuffleSync(MegaCrit.Sts2.Core.Entities.Players.Player player)
+    {
+        var pcs = player.PlayerCombatState;
+        if (pcs == null) return System.Threading.Tasks.Task.CompletedTask;
+
+        var draw = pcs.DrawPile;
+        var discard = pcs.DiscardPile;
+        var combined = new System.Collections.Generic.List<MegaCrit.Sts2.Core.Models.CardModel>(discard.Cards);
+
+        var inDraw = new System.Collections.Generic.HashSet<MegaCrit.Sts2.Core.Models.CardModel>(draw.Cards);
+        foreach (var c in inDraw)
+        {
+            draw.RemoveInternal(c, silent: true);
+            combined.Add(c);
+        }
+
+        // Fisher-Yates with the player's shuffle RNG. Sufficient for our purposes —
+        // the game's StableShuffle has tie-breaking semantics for IComparable<T>
+        // that CardModel doesn't satisfy, but card identity isn't tied here.
+        var rng = player.RunState.Rng.Shuffle;
+        for (int i = combined.Count - 1; i > 0; i--)
+        {
+            int j = rng.NextInt(0, i + 1);
+            (combined[i], combined[j]) = (combined[j], combined[i]);
+        }
+
+        // Re-add to draw pile (we drop the per-card wait because it's animation-only).
+        foreach (var c in combined)
+        {
+            if (inDraw.Contains(c)) draw.AddInternal(c, -1, silent: true);
+            else
+            {
+                discard.RemoveInternal(c, silent: true);
+                draw.AddInternal(c, -1, silent: true);
+            }
+        }
+        return System.Threading.Tasks.Task.CompletedTask;
     }
 
     // Localization isn't initialized in headless mode, so Creature.ToString() (which

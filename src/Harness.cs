@@ -42,6 +42,10 @@ internal static class Harness
         ModelDb.InitIds();
 
         GodotShims.ApplyLocalizationShim();
+
+        // Cards like Armaments ("pick a card to upgrade") wait for a CardSelectCmd
+        // selector. Without one, they NRE. Register a global auto-picker.
+        MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(new AutoCardSelector());
     }
 
     public sealed class CombatHarness
