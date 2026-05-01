@@ -80,7 +80,7 @@ internal static class Sim
             var runner = new BestOfKRunner
             {
                 DeckName = name,
-                Deck = deck,
+                Deck = Harness.AsEntries(deck),
                 Policy = policy,
                 Seeds = 200,
                 InnerSamples = k,
@@ -98,9 +98,9 @@ internal static class Sim
         const int seeds = 500;
         const int innerK = 50;
 
-        var aRunner = new BestOfKRunner { DeckName = nameA, Deck = deckA, Policy = policy, Seeds = seeds, InnerSamples = innerK, Turns = 5 };
+        var aRunner = new BestOfKRunner { DeckName = nameA, Deck = Harness.AsEntries(deckA), Policy = policy, Seeds = seeds, InnerSamples = innerK, Turns = 5 };
         var a = await aRunner.Run();
-        var bRunner = new BestOfKRunner { DeckName = nameB, Deck = deckB, Policy = policy, Seeds = seeds, InnerSamples = innerK, Turns = 5 };
+        var bRunner = new BestOfKRunner { DeckName = nameB, Deck = Harness.AsEntries(deckB), Policy = policy, Seeds = seeds, InnerSamples = innerK, Turns = 5 };
         var b = await bRunner.Run();
 
         // Two-sample diff with pooled std-err. Two independent groups of size N=Seeds.
@@ -147,7 +147,7 @@ internal static class Sim
             var runner = new BestOfKRunner
             {
                 DeckName = deckName,
-                Deck = deck,
+                Deck = Harness.AsEntries(deck),
                 Policy = policy,
                 Turns = 5,
                 Seeds = seeds,

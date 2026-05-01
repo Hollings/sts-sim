@@ -16,7 +16,7 @@ namespace StS2Sim;
 internal sealed class BestOfKRunner
 {
     public required string DeckName { get; init; }
-    public required IReadOnlyList<Type> Deck { get; init; }
+    public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
     public IPlayPolicy Policy { get; init; } = new RandomPolicy();
     public int Turns { get; init; } = 5;
     public int HandSize { get; init; } = 5;

@@ -52,7 +52,20 @@ internal static class Harness
         public required PlayerChoiceContext Ctx { get; init; }
     }
 
+    /// <summary>One card in a deck override: the C# type plus optional upgrade level.</summary>
+    public sealed record DeckEntry(Type CardType, int UpgradeLevel = 0);
+
+    /// <summary>Sugar so callers with a plain List&lt;Type&gt; don't have to map themselves.</summary>
+    public static IReadOnlyList<DeckEntry> AsEntries(IEnumerable<Type> types)
+        => types.Select(t => new DeckEntry(t)).ToList();
+
     public static CombatHarness BeginCombat<TCharacter>(IEnumerable<Type>? deckOverride = null, ulong netId = 1UL, uint shuffleSeed = 1u)
+        where TCharacter : CharacterModel
+        => BeginCombat<TCharacter>(
+            deckOverride?.Select(t => new DeckEntry(t)),
+            netId, shuffleSeed);
+
+    public static CombatHarness BeginCombat<TCharacter>(IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u)
         where TCharacter : CharacterModel
     {
         var character = ModelDb.Character<TCharacter>();
@@ -92,7 +105,7 @@ internal static class Harness
         field!.SetValue(CombatManager.Instance, null);
     }
 
-    private static void ReplaceDeck(Player player, IEnumerable<Type> cardTypes)
+    private static void ReplaceDeck(Player player, IEnumerable<DeckEntry> entries)
     {
         var deck = player.Deck;
         // Wipe canonical starting deck.
@@ -100,14 +113,21 @@ internal static class Harness
         {
             deck.RemoveInternal(card);
         }
-        foreach (var t in cardTypes)
+        foreach (var entry in entries)
         {
             var canonical = (CardModel)typeof(ModelDb)
                 .GetMethod(nameof(ModelDb.Card))!
-                .MakeGenericMethod(t)
+                .MakeGenericMethod(entry.CardType)
                 .Invoke(null, null)!;
             var copy = (CardModel)canonical.ToMutable();
             copy.FloorAddedToDeck = 1;
+            // Apply upgrades. Mirrors CardModel.FromSerializable: each level
+            // is one UpgradeInternal + one FinalizeUpgradeInternal.
+            for (int i = 0; i < entry.UpgradeLevel; i++)
+            {
+                copy.UpgradeInternal();
+                copy.FinalizeUpgradeInternal();
+            }
             // Owner must be set BEFORE the card lands in any pile, otherwise the
             // CardModel.Pile property (which derives from owner.Piles.Find) returns
             // null and CardPileCmd.Add bails with "no owner".

@@ -17,7 +17,7 @@ namespace StS2Sim;
 internal sealed class ConvergenceRunner
 {
     public required string DeckName { get; init; }
-    public required IReadOnlyList<Type> Deck { get; init; }
+    public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
     public required IPlayPolicy Policy { get; init; }
     public int Turns { get; init; } = 5;
     public int HandSize { get; init; } = 5;

@@ -135,11 +135,17 @@ internal sealed class SimServer
             Send(ctx, 404, "application/json", "{\"error\":\"no save file found\"}");
             return;
         }
-        // Group cards by id with counts for compact display.
+        // Group cards by (id, upgradeLevel) so upgraded copies show separately.
         var grouped = deck.Cards
-            .GroupBy(c => c.Id)
-            .Select(g => new { id = g.Key, name = CardIdResolver.PrettyName(g.Key), count = g.Count() })
-            .OrderByDescending(x => x.count).ThenBy(x => x.id)
+            .GroupBy(c => (c.Id, c.UpgradeLevel))
+            .Select(g => new
+            {
+                id = g.Key.Id,
+                upgrade = g.Key.UpgradeLevel,
+                name = CardIdResolver.PrettyName(g.Key.Id) + (g.Key.UpgradeLevel > 0 ? "+" + (g.Key.UpgradeLevel == 1 ? "" : g.Key.UpgradeLevel.ToString()) : ""),
+                count = g.Count(),
+            })
+            .OrderByDescending(x => x.count).ThenBy(x => x.id).ThenBy(x => x.upgrade)
             .ToList();
         var payload = new
         {
@@ -172,9 +178,18 @@ internal sealed class SimServer
             return;
         }
 
-        // Resolve card IDs to C# Types via ModelDb.
-        IReadOnlyList<Type> deckTypes;
-        try { deckTypes = CardIdResolver.ResolveAll(deck.Cards.Select(c => c.Id)); }
+        // Resolve card IDs to C# Types and pair with upgrade level from save.
+        List<Harness.DeckEntry> deckEntries;
+        try
+        {
+            deckEntries = deck.Cards
+                .Select(c =>
+                {
+                    var t = CardIdResolver.Resolve(c.Id) ?? throw new ArgumentException($"Unknown card id '{c.Id}'");
+                    return new Harness.DeckEntry(t, c.UpgradeLevel);
+                })
+                .ToList();
+        }
         catch (Exception ex)
         {
             Send(ctx, 400, "application/json", JsonSerializer.Serialize(new { error = ex.Message }));
@@ -197,7 +212,7 @@ internal sealed class SimServer
                 var runner = new BestOfKRunner
                 {
                     DeckName = deck.CharacterId,
-                    Deck = deckTypes,
+                    Deck = deckEntries,
                     Policy = policy,
                     Seeds = req.Seeds,
                     InnerSamples = req.K,

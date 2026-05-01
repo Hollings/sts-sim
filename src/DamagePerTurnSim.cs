@@ -11,7 +11,7 @@ namespace StS2Sim;
 internal sealed class DamagePerTurnSim
 {
     public required string DeckName { get; init; }
-    public required IReadOnlyList<Type> Deck { get; init; }
+    public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
     public int HandSize { get; init; } = 5;
     public int Energy { get; init; } = 3;
     public int Turns { get; init; } = 5;

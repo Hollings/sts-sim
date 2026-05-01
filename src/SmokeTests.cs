@@ -36,6 +36,8 @@ internal static class SmokeTests
             Test_Bash_AppliesVulnerable,
             Test_StrikeIntoVulnerable_Deals9,
             Test_Inflame_BoostsLaterStrike,
+            Test_BashPlus_Deals10,
+            Test_StrikePlus_Deals9,
         };
 
         var results = new List<TestResult>();
@@ -120,6 +122,46 @@ internal static class SmokeTests
                     return $"expected Vulnerable on dummy, got [{string.Join(",", h.Dummy.Powers.Select(p => p.Id.Entry))}]";
                 return null;
             });
+
+    private static async Task<TestResult> Test_BashPlus_Deals10()
+    {
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new[] { new Harness.DeckEntry(typeof(Bash), UpgradeLevel: 1) });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            SetEnergy(pcs, 3);
+            var bash = pcs.DrawPile.Cards.OfType<Bash>().First();
+            pcs.DrawPile.RemoveInternal(bash); pcs.Hand.AddInternal(bash);
+
+            var hp = h.Dummy.CurrentHp;
+            await bash.OnPlayWrapper(h.Ctx, h.Dummy, isAutoPlay: true,
+                new ResourceInfo { EnergySpent = 2, EnergyValue = 2, StarsSpent = 0, StarValue = 0 },
+                skipCardPileVisuals: true);
+            var dmg = hp - h.Dummy.CurrentHp;
+            return new TestResult("Bash+ deals 10 (8+2 from upgrade)", dmg == 10, dmg == 10 ? null : $"got {dmg}");
+        }
+        finally { Harness.EndCombat(); }
+    }
+
+    private static async Task<TestResult> Test_StrikePlus_Deals9()
+    {
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new[] { new Harness.DeckEntry(typeof(StrikeIronclad), UpgradeLevel: 1) });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            SetEnergy(pcs, 3);
+            var strike = pcs.DrawPile.Cards.OfType<StrikeIronclad>().First();
+            pcs.DrawPile.RemoveInternal(strike); pcs.Hand.AddInternal(strike);
+
+            var hp = h.Dummy.CurrentHp;
+            await strike.OnPlayWrapper(h.Ctx, h.Dummy, isAutoPlay: true,
+                new ResourceInfo { EnergySpent = 1, EnergyValue = 1, StarsSpent = 0, StarValue = 0 },
+                skipCardPileVisuals: true);
+            var dmg = hp - h.Dummy.CurrentHp;
+            return new TestResult("Strike+ deals 9 (6+3 from upgrade)", dmg == 9, dmg == 9 ? null : $"got {dmg}");
+        }
+        finally { Harness.EndCombat(); }
+    }
 
     private static async Task<TestResult> Test_Inflame_BoostsLaterStrike()
     {
