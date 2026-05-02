@@ -16,11 +16,8 @@ internal sealed class HighestDamagePolicy : IPlayPolicy
 
     public CardModel? ChooseCard(Harness.CombatHarness h, int energyLeft, Random rng)
     {
-        var affordable = h.Player.PlayerCombatState!.Hand.Cards
-            .Where(c => c.EnergyCost.GetResolved() <= energyLeft)
-            .ToList();
+        var affordable = Playable.InHand(h, energyLeft).ToList();
         if (affordable.Count == 0) return null;
-
         return affordable.OrderByDescending(EstimatedDamage).First();
     }
 

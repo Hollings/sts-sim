@@ -40,6 +40,7 @@ internal static class SmokeTests
             Test_StrikePlus_Deals9,
             Test_Offering_GivesEnergyAndDraw,
             Test_Hellraiser_AutoplaysDrawnStrikes,
+            Test_AscendersBane_NotPlayedByPolicies,
         };
 
         var results = new List<TestResult>();
@@ -124,6 +125,39 @@ internal static class SmokeTests
                     return $"expected Vulnerable on dummy, got [{string.Join(",", h.Dummy.Powers.Select(p => p.Id.Entry))}]";
                 return null;
             });
+
+    private static Task<TestResult> Test_AscendersBane_NotPlayedByPolicies()
+    {
+        // Ascenders Bane has CardKeyword.Unplayable. Even if a policy considers
+        // every card in hand, none of the policies should ever choose it.
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new List<Type>
+        {
+            typeof(AscendersBane),
+            typeof(StrikeIronclad),
+        });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            Reflect.SetEnergy(pcs, 3);
+            foreach (var c in pcs.DrawPile.Cards.ToList()) { pcs.DrawPile.RemoveInternal(c); pcs.Hand.AddInternal(c); }
+
+            var policies = new IPlayPolicy[]
+            {
+                new GreedyAttackPolicy(),
+                new HighestDamagePolicy(),
+                new RandomPolicy(),
+                new EpsilonGreedyPolicy(new HighestDamagePolicy(), 1.0),
+            };
+            foreach (var p in policies)
+            {
+                var pick = p.ChooseCard(h, 3, new Random(0));
+                if (pick is AscendersBane)
+                    return Task.FromResult(new TestResult("Policies skip Unplayable cards", false, $"{p.Name} chose Ascenders Bane"));
+            }
+            return Task.FromResult(new TestResult("Policies skip Unplayable cards", true, null));
+        }
+        finally { Harness.EndCombat(); }
+    }
 
     private static async Task<TestResult> Test_Hellraiser_AutoplaysDrawnStrikes()
     {

@@ -11,10 +11,9 @@ internal sealed class GreedyAttackPolicy : IPlayPolicy
 
     public CardModel? ChooseCard(Harness.CombatHarness h, int energyLeft, Random rng)
     {
-        foreach (var card in h.Player.PlayerCombatState!.Hand.Cards)
+        foreach (var card in Playable.InHand(h, energyLeft))
         {
             if (card.Type != CardType.Attack) continue;
-            if (card.EnergyCost.GetResolved() > energyLeft) continue;
             return card;
         }
         return null;

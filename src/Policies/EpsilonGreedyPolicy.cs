@@ -27,9 +27,7 @@ internal sealed class EpsilonGreedyPolicy : IPlayPolicy
     {
         if (rng.NextDouble() < _epsilon)
         {
-            var affordable = h.Player.PlayerCombatState!.Hand.Cards
-                .Where(c => c.EnergyCost.GetResolved() <= energyLeft)
-                .ToList();
+            var affordable = Playable.InHand(h, energyLeft).ToList();
             if (affordable.Count == 0) return null;
             return affordable[rng.Next(affordable.Count)];
         }

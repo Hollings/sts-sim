@@ -22,9 +22,7 @@ internal sealed class RandomPolicy : IPlayPolicy
     {
         if (_earlyEndProbability > 0 && rng.NextDouble() < _earlyEndProbability) return null;
 
-        var affordable = h.Player.PlayerCombatState!.Hand.Cards
-            .Where(c => c.EnergyCost.GetResolved() <= energyLeft)
-            .ToList();
+        var affordable = Playable.InHand(h, energyLeft).ToList();
         if (affordable.Count == 0) return null;
         return affordable[rng.Next(affordable.Count)];
     }
