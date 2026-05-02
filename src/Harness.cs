@@ -107,6 +107,11 @@ internal static class Harness
         SetCombatInProgress(false);
         var field = typeof(CombatManager).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
         field!.SetValue(CombatManager.Instance, null);
+
+        // CombatHistory is on the singleton CombatManager and accumulates across
+        // every trial we run; without clearing it grows unbounded over a long
+        // sim (millions of entries).
+        CombatManager.Instance.History.Clear();
     }
 
     private static void ReplaceDeck(Player player, IEnumerable<DeckEntry> entries)

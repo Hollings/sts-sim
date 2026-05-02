@@ -53,6 +53,24 @@ internal sealed class DamagePerTurnSim
 
             for (int turn = 0; turn < Turns; turn++)
             {
+                // Bump RoundNumber so Creature.AfterTurnStart's `roundNumber > 1`
+                // gate fires ClearBlock on turns 2+ (matches real combat).
+                harness.State.RoundNumber = turn + 1;
+
+                // Snapshot every power's Amount as AmountOnTurnStart. Some powers
+                // (Strength variants, Energized) compare current Amount to this
+                // baseline; without it the comparison is meaningless.
+                foreach (var c in harness.State.Creatures)
+                {
+                    c.BeforeTurnStart(harness.State.RoundNumber, MegaCrit.Sts2.Core.Combat.CombatSide.Player);
+                }
+                // Calls ClearBlock() when roundNumber > 1, so player.Block resets
+                // each turn instead of accumulating across turns.
+                foreach (var c in harness.State.Creatures)
+                {
+                    await c.AfterTurnStart(harness.State.RoundNumber, MegaCrit.Sts2.Core.Combat.CombatSide.Player);
+                }
+
                 var hpBefore = harness.Dummy.CurrentHp;
                 var pcs = harness.Player.PlayerCombatState!;
                 // Reset PCS.Energy = Energy at turn start. PCS.Energy is the source
@@ -60,6 +78,13 @@ internal sealed class DamagePerTurnSim
                 // PlayerCmd.GainEnergy/LoseEnergy, and we read it back to give
                 // the policy an accurate budget.
                 SetEnergy(pcs, Energy);
+
+                // Reset CapturedXValue on all hand cards so X-cost cards
+                // (Havoc-style) re-capture cleanly each play.
+                foreach (var c in pcs.Hand.Cards)
+                {
+                    if (c.EnergyCost.CostsX) c.EnergyCost.CapturedXValue = 0;
+                }
                 var played = new List<string>();
                 // Capture autoplays (Hellraiser drawn-strike, Havoc, etc.) into
                 // the same list so the turn log matches reality. The capture must
