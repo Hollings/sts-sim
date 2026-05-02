@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
-using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
@@ -86,8 +84,8 @@ internal static class Harness
         combat.AddPlayer(player);
         player.PopulateCombatState(new Rng(shuffleSeed), combat);
 
-        AttachCombatStateToManager(combat);
-        SetCombatInProgress(true);
+        Reflect.AttachCombatState(combat);
+        Reflect.SetCombatInProgress(true);
 
         var dummyMonster = (MonsterModel)ModelDb.Monster<BigDummy>().ToMutable();
         var dummy = combat.CreateCreature(dummyMonster, CombatSide.Enemy, "slot1");
@@ -104,15 +102,18 @@ internal static class Harness
 
     public static void EndCombat()
     {
-        SetCombatInProgress(false);
-        var field = typeof(CombatManager).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
-        field!.SetValue(CombatManager.Instance, null);
+        Reflect.SetCombatInProgress(false);
+        Reflect.AttachCombatState(null);
 
         // CombatHistory is on the singleton CombatManager and accumulates across
         // every trial we run; without clearing it grows unbounded over a long
         // sim (millions of entries).
         CombatManager.Instance.History.Clear();
     }
+
+    private static readonly MethodInfo ModelDbCardGeneric =
+        typeof(ModelDb).GetMethod(nameof(ModelDb.Card))
+        ?? throw new InvalidOperationException("ModelDb.Card<T> not found");
 
     private static void ReplaceDeck(Player player, IEnumerable<DeckEntry> entries)
     {
@@ -124,10 +125,7 @@ internal static class Harness
         }
         foreach (var entry in entries)
         {
-            var canonical = (CardModel)typeof(ModelDb)
-                .GetMethod(nameof(ModelDb.Card))!
-                .MakeGenericMethod(entry.CardType)
-                .Invoke(null, null)!;
+            var canonical = (CardModel)ModelDbCardGeneric.MakeGenericMethod(entry.CardType).Invoke(null, null)!;
             var copy = (CardModel)canonical.ToMutable();
             copy.FloorAddedToDeck = 1;
             // Apply upgrades. Mirrors CardModel.FromSerializable: each level
@@ -143,17 +141,5 @@ internal static class Harness
             copy.Owner = player;
             deck.AddInternal(copy);
         }
-    }
-
-    private static void SetCombatInProgress(bool value)
-    {
-        typeof(CombatManager).GetProperty("IsInProgress", BindingFlags.Public | BindingFlags.Instance)!
-            .SetValue(CombatManager.Instance, value);
-    }
-
-    private static void AttachCombatStateToManager(CombatState state)
-    {
-        typeof(CombatManager).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(CombatManager.Instance, state);
     }
 }

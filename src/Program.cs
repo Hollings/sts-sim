@@ -39,7 +39,7 @@ internal static class Program
             // First arg "experiment" runs the legacy console comparison instead of the server.
             if (args.Length > 0 && args[0] == "experiment")
             {
-                await Sim.RunSmokeTest();
+                await ExperimentMode.Run();
                 return 0;
             }
 

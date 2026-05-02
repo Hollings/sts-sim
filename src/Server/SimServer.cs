@@ -1,22 +1,23 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace StS2Sim;
 
 /// <summary>
 /// Embedded HTTP + WebSocket server for the standalone UI.
-/// Reads the vanilla save file, exposes the current deck, and runs sim batches
-/// while live-streaming per-seed progress to connected browsers.
+///
+/// Concerns kept here: HTTP routing, static-file serving, WebSocket lifecycle,
+/// and broadcast fan-out. Sim orchestration lives in <see cref="SimJob"/>;
+/// deck I/O lives in <see cref="SaveFileReader"/> + <see cref="CardIdResolver"/>.
 /// </summary>
 internal sealed class SimServer
 {
@@ -33,13 +34,12 @@ internal sealed class SimServer
         public required WebSocket Ws { get; init; }
         // Bounded queue: drops oldest events if the consumer (browser) can't
         // keep up. Keeps the server fast even when the UI is slow.
-        public readonly System.Threading.Channels.Channel<byte[]> Outbox =
-            System.Threading.Channels.Channel.CreateBounded<byte[]>(
-                new System.Threading.Channels.BoundedChannelOptions(256)
-                {
-                    FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
-                    SingleReader = true,
-                });
+        public readonly Channel<byte[]> Outbox =
+            Channel.CreateBounded<byte[]>(new BoundedChannelOptions(256)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+            });
     }
 
     public SimServer(int port, string webRoot)
@@ -156,7 +156,7 @@ internal sealed class SimServer
             {
                 id = g.Key.Id,
                 upgrade = g.Key.UpgradeLevel,
-                name = CardIdResolver.PrettyName(g.Key.Id) + (g.Key.UpgradeLevel > 0 ? "+" + (g.Key.UpgradeLevel == 1 ? "" : g.Key.UpgradeLevel.ToString()) : ""),
+                name = CardLabels.Format(g.Key.Id, g.Key.UpgradeLevel),
                 count = g.Count(),
             })
             .OrderByDescending(x => x.count).ThenBy(x => x.id).ThenBy(x => x.upgrade)
@@ -166,14 +166,14 @@ internal sealed class SimServer
             sourcePath = deck.SourcePath,
             modified = deck.Modified.ToString("yyyy-MM-dd HH:mm:ss"),
             character = deck.CharacterId,
-            characterPretty = CardIdResolver.PrettyName(deck.CharacterId),
+            characterPretty = CardLabels.PrettyName(deck.CharacterId),
             currentHp = deck.CurrentHp,
             maxHp = deck.MaxHp,
             gold = deck.Gold,
             deckSize = deck.Cards.Count,
             cardsGrouped = grouped,
             cardsRaw = deck.Cards.Select(c => c.Id).ToList(),
-            relics = deck.Relics.Select(r => new { id = r, name = CardIdResolver.PrettyName(r) }).ToList(),
+            relics = deck.Relics.Select(r => new { id = r, name = CardLabels.PrettyName(r) }).ToList(),
         };
         await SendJson(ctx, 200, payload);
     }
@@ -217,74 +217,17 @@ internal sealed class SimServer
 
         Send(ctx, 200, "application/json", "{\"ok\":true,\"started\":true}");
 
-        _ = Task.Run(async () =>
+        var job = new SimJob
         {
-            await BroadcastEvent(new { type = "started", deckSize = deck.Cards.Count, character = deck.CharacterId, seeds = req.Seeds, k = req.K, turns = req.Turns, epsilon = req.Epsilon });
-            try
-            {
-                var policy = new EpsilonGreedyPolicy(new HighestDamagePolicy(), req.Epsilon);
-                var runner = new BestOfKRunner
-                {
-                    DeckName = deck.CharacterId,
-                    Deck = deckEntries,
-                    Policy = policy,
-                    Seeds = req.Seeds,
-                    InnerSamples = req.K,
-                    Turns = req.Turns,
-                    Quiet = true,
-                    Cancellation = ct,
-                    OnSeedDone = p => _ = BroadcastEvent(new
-                    {
-                        type = "seed",
-                        index = p.SeedIndex,
-                        total = p.TotalSeeds,
-                        bestForSeed = p.BestForSeed,
-                        runningAvg = p.RunningAvg,
-                        runningStdErr = p.RunningStdErr,
-                        ci95 = 1.96 * p.RunningStdErr,
-                        totalRuns = p.TotalRuns,
-                        elapsedMs = (long)p.Elapsed.TotalMilliseconds,
-                    }),
-                    OnNewBest = trial => _ = BroadcastEvent(new
-                    {
-                        type = "newBest",
-                        seed = trial.Seed,
-                        totalDamage = trial.TotalDamage,
-                        avgPerTurn = trial.AvgPerTurn,
-                        turns = trial.Turns.Select(t => new
-                        {
-                            turn = t.Turn,
-                            damage = t.Damage,
-                            hand = t.Hand,
-                            played = t.CardsPlayed,
-                        }),
-                    }),
-                };
-                var summary = await runner.Run();
-                await BroadcastEvent(new
-                {
-                    type = "done",
-                    avgOfBest = summary.AvgOfBest,
-                    avgPerTurn = summary.AvgOfBest / summary.Seeds == 0 ? 0 : summary.AvgOfBest / req.Turns,
-                    ci95 = summary.Ci95HalfWidth,
-                    bestOfBest = summary.BestOfBest,
-                    worstSeedBest = summary.WorstSeedBest,
-                    totalRuns = summary.TotalRuns,
-                    elapsedSec = summary.Elapsed.TotalSeconds,
-                    medianConvergenceK = summary.MedianConvergenceK,
-                    maxConvergenceK = summary.MaxConvergenceK,
-                });
-            }
-            catch (OperationCanceledException)
-            {
-                await BroadcastEvent(new { type = "cancelled" });
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("[SimServer] sim run threw:\n" + ex);
-                await BroadcastEvent(new { type = "error", message = ex.Message, stack = ex.ToString() });
-            }
-        }, ct);
+            Deck = deckEntries,
+            CharacterId = deck.CharacterId,
+            BroadcastEvent = BroadcastEvent,
+            Seeds = req.Seeds,
+            K = req.K,
+            Turns = req.Turns,
+            Epsilon = req.Epsilon,
+        };
+        _ = Task.Run(() => job.Run(ct), ct);
     }
 
     // ─── WebSocket ─────────────────────────────────────────────────────────

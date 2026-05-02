@@ -76,17 +76,23 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | File | Role |
 |---|---|
 | `Program.cs` | Entry point. Installs `AssemblyLoadContext.Resolving` to find game DLLs by name from `STS2_GAME_DIR`, then applies Harmony shims. |
-| `GodotShims.cs` | The five Harmony patches above, plus `ApplyLocalizationShim` for nicer creature `ToString`. |
-| `Harness.cs` | `Bootstrap()` (init ModelDb etc) and `BeginCombat<T>(deckOverride, shuffleSeed)` / `EndCombat()`. The reusable per-trial setup. |
+| `GodotShims.cs` | The Harmony patches that make the game DLL safe to call without a SceneTree (logger, Time, AutoPlay capture hook, Shuffle replacement, Creature.ToString loc shim). Owns the patch wiring; capture state lives in `PlayCapture.cs`. |
+| `PlayCapture.cs` | Thread-static per-turn list of card plays. The autoplay Harmony prefix records here; `DamagePerTurnSim` drives Start/Stop around each turn. |
+| `Harness.cs` | `Bootstrap()` (init ModelDb etc) and `BeginCombat<T>(deckOverride, shuffleSeed)` / `EndCombat()`. The reusable per-trial setup. Exposes nested `DeckEntry` / `CombatHarness` types. |
+| `Reflect.cs` | Single home for the private-member pokes we need (`CombatManager._state` / `IsInProgress`, `PlayerCombatState.Energy` setter, `Creature.CurrentHp` setter). MethodInfo cached at startup. |
+| `CardLabels.cs` | Display formatting: `"CARD.STRIKE_IRONCLAD"` + level → `"Strike Ironclad+"`. Single source of truth used by everywhere that renders a card name. |
+| `TurnHooks.cs` | `FireAfterTurnEnd(harness, side)` — manual listener iteration for end-of-turn power ticks (the official `Hook.AfterTurnEnd` requires `LocalContext.NetId` we don't have). |
 | `SmokeTests.cs` | Assertion-based tests: Strike=6, Bash applies Vulnerable, Inflame +Strength → Strike does 8, etc. **Run these first if anything seems off.** |
-| `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Fires `AfterTurnEnd` hooks each turn so power durations tick down. |
-| `PlayPolicy.cs` | `IPlayPolicy` interface. Concrete: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. |
+| `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Per-turn body is `RunSingleTurn`; play loop is `PlayPhase`. |
+| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. New policies go here. |
 | `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. |
-| `ConvergenceRunner.cs` | Anytime mode. Runs forever, prints best-so-far + running average + per-trial CSV. Useful for debugging policy behavior; not the primary tool. |
-| `Sim.cs` | The "experiment script". Wires up which decks/policies to compare. Currently: K-vs-accuracy curve + Defend-for-Inflame swap A/B. Only runs in `-- experiment` mode. |
+| `Sim/ConvergenceRunner.cs` | Console-only. Anytime mode for debugging policy behavior. Not used by the web UI. |
+| `Sim/ExperimentMode.cs` | Console-only. Wires up the K-vs-accuracy curve + Defend-for-Inflame swap A/B. Runs only via `dotnet run -- experiment`. |
 | `SaveFileReader.cs` | Walks `%APPDATA%\SlayTheSpire2\steam\<steamid>\{,modded/}profile1\saves\current_run*.save`, picks freshest by mtime, parses player[0].deck. Pure file IO + System.Text.Json — no game state needed. |
-| `CardIdResolver.cs` | `"CARD.STRIKE_IRONCLAD"` → `typeof(StrikeIronclad)` via `ModelDb.GetByIdOrNull`. Requires `Harness.Bootstrap()` first. |
-| `SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static), `GET /api/deck`, `POST /api/sim/start`, `POST /api/sim/stop`, `WS /ws`. Per-seed events stream to all connected sockets. |
+| `CardIdResolver.cs` | `"CARD.STRIKE_IRONCLAD"` → `typeof(StrikeIronclad)` via `ModelDb.GetByIdOrNull`. Requires `Harness.Bootstrap()` first. (Display formatting is in `CardLabels.cs`.) |
+| `Server/SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static), `GET /api/deck`, `POST /api/sim/start`, `POST /api/sim/stop`, `WS /ws`. Owns transport + WS fan-out only. |
+| `Server/SimJob.cs` | One end-to-end best-of-K run with progress events shaped for the UI. Wire-shape contract: event `type` strings + field names match `www/app.js`. |
+| `AutoCardSelector.cs` | Global "auto-pick" selector for cards like Armaments / Havoc that wait on a `CardSelectCmd`. |
 | `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Three charts: per-seed scatter, running avg with 95% CI band, damage histogram. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
 
 ## The algorithm we settled on

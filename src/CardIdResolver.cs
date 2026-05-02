@@ -9,6 +9,8 @@ namespace StS2Sim;
 /// Maps save-file card IDs ("CARD.STRIKE_IRONCLAD") to C# Types
 /// (typeof(StrikeIronclad)). Backed by ModelDb, so it covers every card
 /// in the game. Requires Harness.Bootstrap() to have been called first.
+///
+/// For display formatting (id → "Strike Ironclad+") see <see cref="CardLabels"/>.
 /// </summary>
 internal static class CardIdResolver
 {
@@ -16,7 +18,7 @@ internal static class CardIdResolver
     public static Type? Resolve(string cardId)
     {
         var modelId = ModelId.Deserialize(cardId);
-        var card = ModelDb.GetByIdOrNull<MegaCrit.Sts2.Core.Models.CardModel>(modelId);
+        var card = ModelDb.GetByIdOrNull<CardModel>(modelId);
         return card?.GetType();
     }
 
@@ -32,15 +34,6 @@ internal static class CardIdResolver
             result.Add(t);
         }
         return result;
-    }
-
-    /// <summary>"CARD.STRIKE_IRONCLAD" → "Strike Ironclad" for display.</summary>
-    public static string PrettyName(string cardId)
-    {
-        var parts = cardId.Split('.');
-        if (parts.Length < 2) return cardId;
-        var entry = parts[^1].Replace('_', ' ').ToLowerInvariant();
-        return string.Concat(entry.Split(' ').Select(w => char.ToUpperInvariant(w[0]) + w[1..]).Select(w => w + ' ')).TrimEnd();
     }
 
     /// <summary>List every CardModel id in the game (for the "swap a card" picker).</summary>

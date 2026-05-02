@@ -6,9 +6,14 @@ using MegaCrit.Sts2.Core.Models.Cards;
 
 namespace StS2Sim;
 
-internal static class Sim
+/// <summary>
+/// Console-only entry point for the legacy "experiment" mode (`dotnet run -- experiment`).
+/// Runs the smoke tests, then a K-vs-accuracy curve and a headline A/B compare.
+/// Not used by the web UI — kept around as a quick scripted regression.
+/// </summary>
+internal static class ExperimentMode
 {
-    public static async Task RunSmokeTest()
+    public static async Task Run()
     {
         Harness.Bootstrap();
         await SmokeTests.RunAll();

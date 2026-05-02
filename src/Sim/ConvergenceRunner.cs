@@ -9,10 +9,12 @@ using System.Threading.Tasks;
 namespace StS2Sim;
 
 /// <summary>
-/// Runs a deck under a play policy, tracking best-so-far and running average
-/// across many trials. Prints periodic progress and dumps a per-trial CSV
-/// you can plot to inspect convergence behavior (does best plateau quickly?
-/// is the gap between policies meaningful or noise?).
+/// Console-only. Runs a deck under a play policy, tracking best-so-far and
+/// running average across many trials. Prints periodic progress and dumps a
+/// per-trial CSV you can plot to inspect convergence behavior (does best
+/// plateau quickly? is the gap between policies meaningful or noise?).
+///
+/// Not used by the web UI — kept for ad-hoc debugging via experiment mode.
 /// </summary>
 internal sealed class ConvergenceRunner
 {

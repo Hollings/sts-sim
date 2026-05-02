@@ -1,6 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Models;
 
 namespace StS2Sim;
 
@@ -22,79 +30,64 @@ internal static class GodotShims
 
         // Direct typeof() reference is safe: it returns Type metadata without
         // triggering the type's static constructor.
-        PatchPrefix(
-            harmony,
-            type: typeof(MegaCrit.Sts2.Core.Logging.Logger),
-            methodName: "GetIsRunningFromGodotEditor",
-            prefix: typeof(GodotShims).GetMethod(nameof(IsRunningFromGodotEditor_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+        PatchPrefix(harmony, typeof(Logger), "GetIsRunningFromGodotEditor", nameof(IsRunningFromGodotEditor_Prefix));
 
         // Game logs go through Godot.GD.Print which P/Invokes — redirect to .NET console.
-        PatchPrefix(
-            harmony,
-            type: typeof(MegaCrit.Sts2.Core.Logging.ConsoleLogPrinter),
-            methodName: "Print",
-            prefix: typeof(GodotShims).GetMethod(nameof(ConsoleLogPrinter_Print_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
-
-        // Phase 2 attempt: leave IterateHookListeners alone — we want hooks to fire so
-        // Strength/Vulnerable/etc. modify damage. This requires every model
-        // (relic/card/power) in the chain to have its Owner properly set.
+        PatchPrefix(harmony, typeof(ConsoleLogPrinter), "Print", nameof(ConsoleLogPrinter_Print_Prefix));
 
         // Godot.Time.GetTicksMsec() goes through native interop. Game uses it for
         // animation duration math which collapses to zero in NonInteractiveMode anyway.
-        PatchPrefix(
-            harmony,
-            type: typeof(Godot.Time),
-            methodName: "GetTicksMsec",
-            prefix: typeof(GodotShims).GetMethod(nameof(Time_GetTicksMsec_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+        PatchPrefix(harmony, typeof(Godot.Time), "GetTicksMsec", nameof(Time_GetTicksMsec_Prefix));
 
         // CardCmd.AutoPlay fires for any auto-played card (Hellraiser strikes,
         // Havoc top-of-deck plays, etc.). The policy loop only sees plays it
         // chose itself, so without this autoplays would go unrecorded in the
         // turn log even though they deal real damage.
-        PatchPrefix(
-            harmony,
-            type: typeof(MegaCrit.Sts2.Core.Commands.CardCmd),
-            methodName: "AutoPlay",
-            prefix: typeof(GodotShims).GetMethod(nameof(CardCmd_AutoPlay_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+        PatchPrefix(harmony, typeof(CardCmd), "AutoPlay", nameof(CardCmd_AutoPlay_Prefix));
 
         // CardPileCmd.Shuffle calls Engine.GetMainLoop() for animation pacing
         // (sleeps between adding cards back to draw pile). We replace the whole
         // method with a synchronous shuffle that does the same logical work
         // without ever touching SceneTree.
-        PatchPrefix(
-            harmony,
-            type: typeof(MegaCrit.Sts2.Core.Commands.CardPileCmd),
-            methodName: "Shuffle",
-            prefix: typeof(GodotShims).GetMethod(nameof(CardPileCmd_Shuffle_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+        PatchPrefix(harmony, typeof(CardPileCmd), "Shuffle", nameof(CardPileCmd_Shuffle_Prefix));
     }
 
-    private static void PatchPrefix(Harmony harmony, Type? type, string methodName, MethodInfo prefix)
+    /// <summary>
+    /// Localization isn't initialized in headless mode, so Creature.ToString() (which
+    /// hits LocString.GetFormattedText()) throws. Patch it to return a safe identifier.
+    /// Applied after ModelDb.Init so it can target the resolved type.
+    /// </summary>
+    public static void ApplyLocalizationShim()
+    {
+        var harmony = new Harmony("StS2Sim.LocShim");
+        harmony.Patch(
+            AccessTools.Method(typeof(Creature), nameof(object.ToString)),
+            prefix: new HarmonyMethod(GetPrefix(nameof(Creature_ToString_Prefix))));
+    }
+
+    private static void PatchPrefix(Harmony harmony, Type? type, string methodName, string prefixName)
     {
         if (type == null) throw new InvalidOperationException("Type not found for patch: " + methodName);
         var target = AccessTools.Method(type, methodName);
         if (target == null) throw new InvalidOperationException($"Method {type.FullName}.{methodName} not found for patch");
-        harmony.Patch(target, prefix: new HarmonyMethod(prefix));
+        harmony.Patch(target, prefix: new HarmonyMethod(GetPrefix(prefixName)));
     }
 
-    // Prefix: skip original, return false (we're never the Godot editor).
+    private static MethodInfo GetPrefix(string name)
+        => typeof(GodotShims).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
+           ?? throw new InvalidOperationException($"Prefix method {name} not found");
+
+    // ─── Prefixes ──────────────────────────────────────────────────────────
+
     private static bool IsRunningFromGodotEditor_Prefix(ref bool __result)
     {
         __result = false;
         return false; // false = skip original
     }
 
-    private static bool ConsoleLogPrinter_Print_Prefix(MegaCrit.Sts2.Core.Logging.LogLevel logLevel, string text)
+    private static bool ConsoleLogPrinter_Print_Prefix(LogLevel logLevel, string text)
     {
         Console.WriteLine($"[{logLevel.ToString().ToUpperInvariant()}] {text}");
-        return false;
-    }
-
-    private static readonly System.Collections.Generic.IEnumerable<MegaCrit.Sts2.Core.Models.AbstractModel> _emptyListeners
-        = System.Array.Empty<MegaCrit.Sts2.Core.Models.AbstractModel>();
-
-    private static bool IterateHookListeners_Prefix(ref System.Collections.Generic.IEnumerable<MegaCrit.Sts2.Core.Models.AbstractModel> __result)
-    {
-        __result = _emptyListeners;
         return false;
     }
 
@@ -104,47 +97,36 @@ internal static class GodotShims
         return false;
     }
 
-    // ─── Autoplay capture ──────────────────────────────────────────────────
-    //
-    // Per-turn list that DamagePerTurnSim populates: it sets the list at
-    // turn start, the autoplay prefix below appends to it whenever
-    // CardCmd.AutoPlay runs. The sim's policy loop appends manual plays to
-    // the same list so the final ordering matches reality.
-    [System.ThreadStatic] private static System.Collections.Generic.List<string>? _currentTurnPlays;
+    private static void CardCmd_AutoPlay_Prefix(CardModel card)
+        => PlayCapture.RecordAutoPlay(card);
 
-    public static void StartCapturingPlays(System.Collections.Generic.List<string> sink) => _currentTurnPlays = sink;
-    public static void StopCapturingPlays() => _currentTurnPlays = null;
-
-    private static void CardCmd_AutoPlay_Prefix(MegaCrit.Sts2.Core.Models.CardModel card)
+    private static bool Creature_ToString_Prefix(Creature __instance, ref string __result)
     {
-        if (_currentTurnPlays == null) return;
-        var pretty = StS2Sim.CardIdResolver.PrettyName(card.Id.ToString());
-        var label = card.IsUpgraded ? pretty + (card.CurrentUpgradeLevel == 1 ? "+" : "+" + card.CurrentUpgradeLevel) : pretty;
-        _currentTurnPlays.Add(label + " (auto)");
+        __result = __instance.IsMonster
+            ? $"<Monster {__instance.Monster!.Id}>"
+            : $"<Player {__instance.Player!.Character.Id}>";
+        return false;
     }
 
     // Replacement for CardPileCmd.Shuffle that skips the per-card animation wait
     // (which calls Engine.GetMainLoop() and crashes outside Godot). Logic mirrors
     // the original: pull discards, shuffle by player's RNG, re-add to draw pile.
-    private static bool CardPileCmd_Shuffle_Prefix(
-        MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext,
-        MegaCrit.Sts2.Core.Entities.Players.Player player,
-        ref System.Threading.Tasks.Task __result)
+    private static bool CardPileCmd_Shuffle_Prefix(PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
         __result = ShuffleSync(player);
         return false;
     }
 
-    private static System.Threading.Tasks.Task ShuffleSync(MegaCrit.Sts2.Core.Entities.Players.Player player)
+    private static Task ShuffleSync(Player player)
     {
         var pcs = player.PlayerCombatState;
-        if (pcs == null) return System.Threading.Tasks.Task.CompletedTask;
+        if (pcs == null) return Task.CompletedTask;
 
         var draw = pcs.DrawPile;
         var discard = pcs.DiscardPile;
-        var combined = new System.Collections.Generic.List<MegaCrit.Sts2.Core.Models.CardModel>(discard.Cards);
+        var combined = new List<CardModel>(discard.Cards);
 
-        var inDraw = new System.Collections.Generic.HashSet<MegaCrit.Sts2.Core.Models.CardModel>(draw.Cards);
+        var inDraw = new HashSet<CardModel>(draw.Cards);
         foreach (var c in inDraw)
         {
             draw.RemoveInternal(c, silent: true);
@@ -171,24 +153,6 @@ internal static class GodotShims
                 draw.AddInternal(c, -1, silent: true);
             }
         }
-        return System.Threading.Tasks.Task.CompletedTask;
-    }
-
-    // Localization isn't initialized in headless mode, so Creature.ToString() (which
-    // hits LocString.GetFormattedText()) throws. Patch it to return a safe identifier.
-    public static void ApplyLocalizationShim()
-    {
-        var harmony = new Harmony("StS2Sim.LocShim");
-        harmony.Patch(
-            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), nameof(object.ToString)),
-            prefix: new HarmonyMethod(typeof(GodotShims).GetMethod(nameof(Creature_ToString_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!));
-    }
-
-    private static bool Creature_ToString_Prefix(MegaCrit.Sts2.Core.Entities.Creatures.Creature __instance, ref string __result)
-    {
-        __result = __instance.IsMonster
-            ? $"<Monster {__instance.Monster!.Id}>"
-            : $"<Player {__instance.Player!.Character.Id}>";
-        return false;
+        return Task.CompletedTask;
     }
 }

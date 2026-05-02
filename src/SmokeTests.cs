@@ -136,7 +136,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 5);
+            Reflect.SetEnergy(pcs,5);
 
             // Move Hellraiser into hand and play it.
             var hellraiser = pcs.DrawPile.Cards.OfType<Hellraiser>().First();
@@ -167,7 +167,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 0); // start with zero so we can verify Offering gave +2
+            Reflect.SetEnergy(pcs,0); // start with zero so we can verify Offering gave +2
             var offering = pcs.DrawPile.Cards.OfType<Offering>().First();
             pcs.DrawPile.RemoveInternal(offering);
             pcs.Hand.AddInternal(offering);
@@ -196,7 +196,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 3);
+            Reflect.SetEnergy(pcs,3);
             var bash = pcs.DrawPile.Cards.OfType<Bash>().First();
             pcs.DrawPile.RemoveInternal(bash); pcs.Hand.AddInternal(bash);
 
@@ -216,7 +216,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 3);
+            Reflect.SetEnergy(pcs,3);
             var strike = pcs.DrawPile.Cards.OfType<StrikeIronclad>().First();
             pcs.DrawPile.RemoveInternal(strike); pcs.Hand.AddInternal(strike);
 
@@ -236,7 +236,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 3);
+            Reflect.SetEnergy(pcs,3);
 
             var inflame = pcs.DrawPile.Cards.OfType<Inflame>().First();
             var strike = pcs.DrawPile.Cards.OfType<StrikeIronclad>().First();
@@ -266,7 +266,7 @@ internal static class SmokeTests
         try
         {
             var pcs = h.Player.PlayerCombatState!;
-            SetEnergy(pcs, 3);
+            Reflect.SetEnergy(pcs,3);
 
             var bash = pcs.DrawPile.Cards.OfType<Bash>().First();
             var strike = pcs.DrawPile.Cards.OfType<StrikeIronclad>().First();
@@ -321,7 +321,7 @@ internal static class SmokeTests
         {
             var pcs = h.Player.PlayerCombatState!;
             // Set energy explicitly.
-            SetEnergy(pcs, 3);
+            Reflect.SetEnergy(pcs,3);
 
             // Move the card-under-test from draw pile to hand.
             var card = pcs.DrawPile.Cards.OfType<TCard>().First();
@@ -356,11 +356,4 @@ internal static class SmokeTests
 
     private static string? Expect<T>(T actual, T expected, string what) where T : IEquatable<T>
         => actual.Equals(expected) ? null : $"expected {what}={expected}, got {actual}";
-
-    private static void SetEnergy(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, int amount)
-    {
-        var prop = typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState)
-            .GetProperty("Energy", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        prop!.SetValue(pcs, amount);
-    }
 }
