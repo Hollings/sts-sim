@@ -304,23 +304,21 @@ function handleEvent(e) {
 function renderBestCombat(e) {
   $('best-headline').textContent = `${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${e.seed.toString(16).toUpperCase()}`;
   const cells = e.turns.map(t => {
-    // Mark cards that were also played (greys out the dead ones in hand).
-    const played = new Set(t.played);
-    const handPills = t.hand.map(c => {
-      const wasPlayed = played.has(c);
-      return `<span class="pill ${wasPlayed ? 'played' : 'dim'}">${escapeHtml(c)}</span>`;
+    const rows = (t.events || []).map(ev => {
+      if (ev.kind === 'draw') {
+        return `<div class="ev draw"><span class="icon">↓</span><span class="ev-label">${escapeHtml(ev.label)}</span></div>`;
+      }
+      const cls = ev.auto ? 'ev play auto' : 'ev play manual';
+      const tag = ev.auto ? '<span class="auto-tag">auto</span>' : '';
+      return `<div class="${cls}"><span class="icon">▶</span><span class="ev-label">${escapeHtml(ev.label)}</span>${tag}</div>`;
     }).join('');
-    const playedPills = t.played.map(c => `<span class="pill played">${escapeHtml(c)}</span>`).join('');
     return `
       <div class="turn-card">
         <div class="head">
           <span class="turn-num">Turn ${t.turn}</span>
           <span class="turn-dmg">${t.damage} dmg</span>
         </div>
-        <div class="label">Hand drawn</div>
-        <div class="pill-list">${handPills || '<span class="pill dim">empty</span>'}</div>
-        <div class="label">Played in order</div>
-        <div class="pill-list">${playedPills || '<span class="pill dim">none</span>'}</div>
+        <div class="event-list">${rows || '<div class="empty">no events</div>'}</div>
       </div>`;
   }).join('');
   $('best-combat').innerHTML = cells;

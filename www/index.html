@@ -58,16 +58,22 @@
   .verdict.error { background: #4a1c1c; color: var(--bad); }
   .empty { color: var(--fg-dim); font-style: italic; padding: 8px; }
   .best-headline { font-size: 11px; color: var(--good); font-weight: normal; margin-left: 8px; letter-spacing: 0; text-transform: none; }
-  .best-combat { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .best-combat { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
   .turn-card { background: var(--bg-2); border-left: 3px solid var(--accent-2); padding: 8px 12px; border-radius: 3px; }
-  .turn-card .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .turn-card .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #21455a; }
   .turn-card .turn-num { font-weight: bold; color: var(--accent-2); }
   .turn-card .turn-dmg { font-variant-numeric: tabular-nums; }
-  .turn-card .label { font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 4px 0 2px; }
-  .turn-card .pill-list { display: flex; flex-wrap: wrap; gap: 3px; }
-  .pill { background: rgba(33,69,90,0.7); padding: 2px 6px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
-  .pill.played { background: var(--accent); color: var(--fg); }
-  .pill.dim { opacity: 0.5; }
+  .event-list { display: flex; flex-direction: column; gap: 1px; }
+  .ev { display: flex; align-items: center; gap: 6px; padding: 2px 4px; font-size: 12px; border-radius: 2px; }
+  .ev .icon { width: 12px; text-align: center; font-weight: bold; flex-shrink: 0; }
+  .ev .ev-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev.draw { color: var(--fg-dim); }
+  .ev.draw .icon { color: #6da4c4; }
+  .ev.play.manual { color: var(--fg); background: rgba(139,25,19,0.35); }
+  .ev.play.manual .icon { color: var(--accent-2); }
+  .ev.play.auto { color: var(--fg); background: rgba(212,161,66,0.18); }
+  .ev.play.auto .icon { color: var(--accent-2); }
+  .auto-tag { font-size: 9px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 </style>
 </head>
 <body>

@@ -103,8 +103,15 @@ internal sealed class SimJob
         {
             turn = t.Turn,
             damage = t.Damage,
-            hand = t.Hand,
-            played = t.CardsPlayed,
+            // Chronological event timeline: each entry is { kind: "draw"|"play",
+            // label, auto: true if this play came from an autoplay (Hellraiser
+            // strike etc.) }. Enables the UI to render cascades top-to-bottom.
+            events = t.Events.Select(e => new
+            {
+                kind = e.Kind == PlayCapture.EventKind.Draw ? "draw" : "play",
+                label = e.Label,
+                auto = e.Auto,
+            }),
         }),
     });
 }

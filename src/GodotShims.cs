@@ -45,6 +45,12 @@ internal static class GodotShims
         // turn log even though they deal real damage.
         PatchPrefix(harmony, typeof(CardCmd), "AutoPlay", nameof(CardCmd_AutoPlay_Prefix));
 
+        // Hook.AfterCardDrawn fires once per drawn card from CardPileCmd.Draw.
+        // Patching it as a prefix means we record the draw BEFORE Hellraiser-
+        // style autoplay fires, giving us a chronological event timeline:
+        // "drew Pommel Strike" → "played Pommel Strike (auto)" → "drew Strike".
+        PatchPrefix(harmony, typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterCardDrawn", nameof(Hook_AfterCardDrawn_Prefix));
+
         // CardPileCmd.Shuffle calls Engine.GetMainLoop() for animation pacing
         // (sleeps between adding cards back to draw pile). We replace the whole
         // method with a synchronous shuffle that does the same logical work
@@ -99,6 +105,9 @@ internal static class GodotShims
 
     private static void CardCmd_AutoPlay_Prefix(CardModel card)
         => PlayCapture.RecordAutoPlay(card);
+
+    private static void Hook_AfterCardDrawn_Prefix(CardModel card)
+        => PlayCapture.RecordDraw(card);
 
     private static bool Creature_ToString_Prefix(Creature __instance, ref string __result)
     {

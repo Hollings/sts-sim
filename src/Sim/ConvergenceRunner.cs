@@ -123,7 +123,8 @@ internal sealed class ConvergenceRunner
             Console.WriteLine($"  Best trial breakdown (seed=0x{bestTrial.Seed:X}):");
             foreach (var t in bestTrial.Turns)
             {
-                Console.WriteLine($"    Turn {t.Turn}: {t.Damage} dmg via [{string.Join(", ", t.CardsPlayed)}]");
+                var played = t.Events.Where(e => e.Kind == PlayCapture.EventKind.Play).Select(e => e.Label);
+                Console.WriteLine($"    Turn {t.Turn}: {t.Damage} dmg via [{string.Join(", ", played)}]");
             }
         }
         return summary;

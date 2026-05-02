@@ -26,7 +26,7 @@ internal sealed class DamagePerTurnSim
     public IPlayPolicy Policy { get; init; } = new GreedyAttackPolicy();
     public uint? PolicyRngSeed { get; init; } = null;
 
-    public sealed record TurnResult(int Turn, int Damage, IReadOnlyList<string> Hand, IReadOnlyList<string> CardsPlayed);
+    public sealed record TurnResult(int Turn, int Damage, IReadOnlyList<PlayCapture.Event> Events);
 
     public sealed record TrialResult(uint Seed, IReadOnlyList<TurnResult> Turns)
     {
@@ -99,11 +99,10 @@ internal sealed class DamagePerTurnSim
             if (c.EnergyCost.CostsX) c.EnergyCost.CapturedXValue = 0;
         }
 
-        var played = new List<string>();
-        // Capture autoplays (Hellraiser drawn-strike, Havoc, etc.) into the
-        // same list so the turn log matches reality. Capture must be installed
-        // BEFORE the draw because Hellraiser fires mid-draw.
-        PlayCapture.Start(played);
+        // Chronological per-turn event log: every draw and every play (manual
+        // or auto) recorded in the order it actually happened.
+        var events = new List<PlayCapture.Event>();
+        PlayCapture.Start(events);
 
         // Use CardPileCmd.Draw so Hook.AfterCardDrawn fires — that's what powers
         // like Hellraiser hook into to autoplay Strikes mid-draw.
@@ -111,12 +110,7 @@ internal sealed class DamagePerTurnSim
         if (needed > 0)
             await CardPileCmd.Draw(harness.Ctx, needed, harness.Player);
 
-        // Snapshot hand AFTER autoplays have resolved (those cards aren't
-        // really "drawn into hand" from the player's perspective — they were
-        // drawn and immediately played out).
-        var handSnapshot = hand.Cards.Select(CardLabels.Format).ToList();
-
-        await PlayPhase(harness, pcs, played, policyRng);
+        await PlayPhase(harness, pcs, policyRng);
 
         PlayCapture.Stop();
         var hpAfter = harness.Dummy.CurrentHp;
@@ -136,10 +130,10 @@ internal sealed class DamagePerTurnSim
         // Heal dummy back to full so HP doesn't ever hit 0.
         Reflect.HealToFull(harness.Dummy);
 
-        return new TurnResult(roundNumber, hpBefore - hpAfter, handSnapshot, played);
+        return new TurnResult(roundNumber, hpBefore - hpAfter, events);
     }
 
-    private async Task PlayPhase(Harness.CombatHarness harness, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, List<string> played, Random policyRng)
+    private async Task PlayPhase(Harness.CombatHarness harness, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, Random policyRng)
     {
         while (pcs.Energy > 0)
         {
@@ -164,8 +158,8 @@ internal sealed class DamagePerTurnSim
             // ourselves; cards that gain energy mid-OnPlay (Offering, Bloodletting)
             // will be visible in the next iter.
             pcs.LoseEnergy(cost);
+            PlayCapture.RecordManualPlay(card);
             await card.OnPlayWrapper(harness.Ctx, target, isAutoPlay: true, resources, skipCardPileVisuals: true);
-            played.Add(CardLabels.Format(card));
         }
     }
 }
