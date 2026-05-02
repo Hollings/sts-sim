@@ -53,7 +53,14 @@ internal sealed class DamagePerTurnSim
 
             for (int turn = 0; turn < Turns; turn++)
             {
-                FillHand(hand, draw, discard, HandSize);
+                // Use CardPileCmd.Draw so Hook.AfterCardDrawn fires — that's what
+                // powers like Hellraiser hook into to autoplay Strikes mid-draw.
+                // Manually moving cards between piles silently skips those effects.
+                int needed = HandSize - hand.Cards.Count;
+                if (needed > 0)
+                {
+                    await MegaCrit.Sts2.Core.Commands.CardPileCmd.Draw(harness.Ctx, needed, harness.Player);
+                }
 
                 // Snapshot hand BEFORE play decisions so the UI can show "you were
                 // dealt these 5 cards on this turn" alongside what got played.
@@ -122,26 +129,10 @@ internal sealed class DamagePerTurnSim
         }
     }
 
-    private static void FillHand(CardPile hand, CardPile draw, CardPile discard, int target)
-    {
-        while (hand.Cards.Count < target)
-        {
-            if (draw.Cards.Count == 0)
-            {
-                if (discard.Cards.Count == 0) return;
-                // Shuffle discard back into draw.
-                foreach (var c in discard.Cards.ToList())
-                {
-                    discard.RemoveInternal(c);
-                    draw.AddInternal(c);
-                }
-            }
-            // Take top card.
-            var top = draw.Cards[draw.Cards.Count - 1];
-            draw.RemoveInternal(top);
-            hand.AddInternal(top);
-        }
-    }
+    // FillHand was a manual hand/draw/discard mover; replaced with
+    // CardPileCmd.Draw so on-draw hooks (Hellraiser autoplay, etc.) fire.
+    // CardPileCmd.Draw also handles draw->discard reshuffle internally
+    // via the Shuffle shim in GodotShims.
 
     private static void SetEnergy(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, int amount)
     {

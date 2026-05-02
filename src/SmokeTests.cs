@@ -39,6 +39,7 @@ internal static class SmokeTests
             Test_BashPlus_Deals10,
             Test_StrikePlus_Deals9,
             Test_Offering_GivesEnergyAndDraw,
+            Test_Hellraiser_AutoplaysDrawnStrikes,
         };
 
         var results = new List<TestResult>();
@@ -123,6 +124,37 @@ internal static class SmokeTests
                     return $"expected Vulnerable on dummy, got [{string.Join(",", h.Dummy.Powers.Select(p => p.Id.Entry))}]";
                 return null;
             });
+
+    private static async Task<TestResult> Test_Hellraiser_AutoplaysDrawnStrikes()
+    {
+        // After Hellraiser power is applied, drawing a Strike should auto-play it.
+        var h = Harness.BeginCombat<Ironclad>(deckOverride: new List<Type>
+        {
+            typeof(Hellraiser),
+            typeof(StrikeIronclad), typeof(StrikeIronclad), typeof(StrikeIronclad),
+        });
+        try
+        {
+            var pcs = h.Player.PlayerCombatState!;
+            SetEnergy(pcs, 5);
+
+            // Move Hellraiser into hand and play it.
+            var hellraiser = pcs.DrawPile.Cards.OfType<Hellraiser>().First();
+            pcs.DrawPile.RemoveInternal(hellraiser);
+            pcs.Hand.AddInternal(hellraiser);
+            await hellraiser.OnPlayWrapper(h.Ctx, h.Player.Creature, isAutoPlay: true,
+                new ResourceInfo { EnergySpent = 2, EnergyValue = 2, StarsSpent = 0, StarValue = 0 },
+                skipCardPileVisuals: true);
+
+            // Now player has Hellraiser power. Draw 1 — should be a Strike, and
+            // it should auto-play (dealing 6 dmg to dummy).
+            var hpBefore = h.Dummy.CurrentHp;
+            await MegaCrit.Sts2.Core.Commands.CardPileCmd.Draw(h.Ctx, 1, h.Player);
+            var dmg = hpBefore - h.Dummy.CurrentHp;
+            return new TestResult("Hellraiser autoplays drawn Strikes", dmg == 6, dmg == 6 ? null : $"expected 6 dmg from auto-played Strike, got {dmg}");
+        }
+        finally { Harness.EndCombat(); }
+    }
 
     private static async Task<TestResult> Test_Offering_GivesEnergyAndDraw()
     {
