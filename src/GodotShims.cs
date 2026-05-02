@@ -47,6 +47,16 @@ internal static class GodotShims
             methodName: "GetTicksMsec",
             prefix: typeof(GodotShims).GetMethod(nameof(Time_GetTicksMsec_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
 
+        // CardCmd.AutoPlay fires for any auto-played card (Hellraiser strikes,
+        // Havoc top-of-deck plays, etc.). The policy loop only sees plays it
+        // chose itself, so without this autoplays would go unrecorded in the
+        // turn log even though they deal real damage.
+        PatchPrefix(
+            harmony,
+            type: typeof(MegaCrit.Sts2.Core.Commands.CardCmd),
+            methodName: "AutoPlay",
+            prefix: typeof(GodotShims).GetMethod(nameof(CardCmd_AutoPlay_Prefix), BindingFlags.Static | BindingFlags.NonPublic)!);
+
         // CardPileCmd.Shuffle calls Engine.GetMainLoop() for animation pacing
         // (sleeps between adding cards back to draw pile). We replace the whole
         // method with a synchronous shuffle that does the same logical work
@@ -92,6 +102,25 @@ internal static class GodotShims
     {
         __result = 0;
         return false;
+    }
+
+    // ─── Autoplay capture ──────────────────────────────────────────────────
+    //
+    // Per-turn list that DamagePerTurnSim populates: it sets the list at
+    // turn start, the autoplay prefix below appends to it whenever
+    // CardCmd.AutoPlay runs. The sim's policy loop appends manual plays to
+    // the same list so the final ordering matches reality.
+    [System.ThreadStatic] private static System.Collections.Generic.List<string>? _currentTurnPlays;
+
+    public static void StartCapturingPlays(System.Collections.Generic.List<string> sink) => _currentTurnPlays = sink;
+    public static void StopCapturingPlays() => _currentTurnPlays = null;
+
+    private static void CardCmd_AutoPlay_Prefix(MegaCrit.Sts2.Core.Models.CardModel card)
+    {
+        if (_currentTurnPlays == null) return;
+        var pretty = StS2Sim.CardIdResolver.PrettyName(card.Id.ToString());
+        var label = card.IsUpgraded ? pretty + (card.CurrentUpgradeLevel == 1 ? "+" : "+" + card.CurrentUpgradeLevel) : pretty;
+        _currentTurnPlays.Add(label + " (auto)");
     }
 
     // Replacement for CardPileCmd.Shuffle that skips the per-card animation wait

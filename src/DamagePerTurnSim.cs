@@ -53,19 +53,6 @@ internal sealed class DamagePerTurnSim
 
             for (int turn = 0; turn < Turns; turn++)
             {
-                // Use CardPileCmd.Draw so Hook.AfterCardDrawn fires — that's what
-                // powers like Hellraiser hook into to autoplay Strikes mid-draw.
-                // Manually moving cards between piles silently skips those effects.
-                int needed = HandSize - hand.Cards.Count;
-                if (needed > 0)
-                {
-                    await MegaCrit.Sts2.Core.Commands.CardPileCmd.Draw(harness.Ctx, needed, harness.Player);
-                }
-
-                // Snapshot hand BEFORE play decisions so the UI can show "you were
-                // dealt these 5 cards on this turn" alongside what got played.
-                var handSnapshot = hand.Cards.Select(c => CardLabel(c)).ToList();
-
                 var hpBefore = harness.Dummy.CurrentHp;
                 var pcs = harness.Player.PlayerCombatState!;
                 // Reset PCS.Energy = Energy at turn start. PCS.Energy is the source
@@ -74,6 +61,23 @@ internal sealed class DamagePerTurnSim
                 // the policy an accurate budget.
                 SetEnergy(pcs, Energy);
                 var played = new List<string>();
+                // Capture autoplays (Hellraiser drawn-strike, Havoc, etc.) into
+                // the same list so the turn log matches reality. The capture must
+                // be installed BEFORE the draw because Hellraiser fires mid-draw.
+                GodotShims.StartCapturingPlays(played);
+
+                // Use CardPileCmd.Draw so Hook.AfterCardDrawn fires — that's what
+                // powers like Hellraiser hook into to autoplay Strikes mid-draw.
+                int needed = HandSize - hand.Cards.Count;
+                if (needed > 0)
+                {
+                    await MegaCrit.Sts2.Core.Commands.CardPileCmd.Draw(harness.Ctx, needed, harness.Player);
+                }
+
+                // Snapshot hand AFTER autoplays have resolved (those cards aren't
+                // really "drawn into hand" from the player's perspective — they
+                // were drawn and immediately played out).
+                var handSnapshot = hand.Cards.Select(c => CardLabel(c)).ToList();
 
                 while (pcs.Energy > 0)
                 {
@@ -102,6 +106,7 @@ internal sealed class DamagePerTurnSim
                     played.Add(CardLabel(card));
                 }
 
+                GodotShims.StopCapturingPlays();
                 var hpAfter = harness.Dummy.CurrentHp;
                 turnResults.Add(new TurnResult(turn + 1, hpBefore - hpAfter, handSnapshot, played));
 
