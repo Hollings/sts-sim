@@ -17,10 +17,11 @@ internal sealed class BestOfKRunner
 {
     public required string DeckName { get; init; }
     public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
+    public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
+    public Type CharacterType { get; init; } = typeof(MegaCrit.Sts2.Core.Models.Characters.Ironclad);
     public IPlayPolicy Policy { get; init; } = new RandomPolicy();
     public int Turns { get; init; } = 5;
     public int HandSize { get; init; } = 5;
-    public int Energy { get; init; } = 3;
     public int Seeds { get; init; } = 100;
     public int InnerSamples { get; init; } = 100;
     public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromSeconds(2);
@@ -66,9 +67,10 @@ internal sealed class BestOfKRunner
                 {
                     DeckName = DeckName,
                     Deck = Deck,
+                    Relics = Relics,
+                    CharacterType = CharacterType,
                     Turns = Turns,
                     HandSize = HandSize,
-                    Energy = Energy,
                     Policy = Policy,
                     PolicyRngSeed = policySeed,
                 };

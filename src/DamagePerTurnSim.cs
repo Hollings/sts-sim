@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
-using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Characters;
 
 namespace StS2Sim;
@@ -20,8 +18,9 @@ internal sealed class DamagePerTurnSim
 {
     public required string DeckName { get; init; }
     public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
+    public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
+    public Type CharacterType { get; init; } = typeof(Ironclad);
     public int HandSize { get; init; } = 5;
-    public int Energy { get; init; } = 3;
     public int Turns { get; init; } = 5;
     public IPlayPolicy Policy { get; init; } = new GreedyAttackPolicy();
     public uint? PolicyRngSeed { get; init; } = null;
@@ -47,10 +46,14 @@ internal sealed class DamagePerTurnSim
 
     public async Task<TrialResult> RunSingleTrial(uint shuffleSeed)
     {
-        var harness = Harness.BeginCombat<Ironclad>(deckOverride: Deck, shuffleSeed: shuffleSeed);
+        var harness = Harness.BeginCombat(CharacterType, deckOverride: Deck, shuffleSeed: shuffleSeed, relicIds: Relics);
         var policyRng = new Random((int)(PolicyRngSeed ?? shuffleSeed ^ 0xDEAD_BEEFu));
         try
         {
+            // Fire the at-combat-start hook so relics like Vajra (+1 Strength on enter)
+            // and Bronze Scales apply their effects before turn 1.
+            await TurnHooks.FireAfterRoomEntered(harness);
+
             var turnResults = new List<TurnResult>();
             for (int turn = 0; turn < Turns; turn++)
             {
@@ -67,65 +70,38 @@ internal sealed class DamagePerTurnSim
     private async Task<TurnResult> RunSingleTurn(Harness.CombatHarness harness, int roundNumber, Random policyRng)
     {
         var pcs = harness.Player.PlayerCombatState!;
-        var hand = pcs.Hand;
-        var discard = pcs.DiscardPile;
 
-        // Bump RoundNumber so Creature.AfterTurnStart's `roundNumber > 1`
-        // gate fires ClearBlock on turns 2+ (matches real combat).
-        harness.State.RoundNumber = roundNumber;
-
-        // Snapshot every power's Amount as AmountOnTurnStart. Some powers
-        // (Strength variants, Energized) compare current Amount to this
-        // baseline; without it the comparison is meaningless.
-        foreach (var c in harness.State.Creatures)
-            c.BeforeTurnStart(roundNumber, CombatSide.Player);
-
-        // Calls ClearBlock() when roundNumber > 1, so player.Block resets
-        // each turn instead of accumulating across turns.
-        foreach (var c in harness.State.Creatures)
-            await c.AfterTurnStart(roundNumber, CombatSide.Player);
+        // Side-turn-start half: bump RoundNumber → BeforeTurnStart snapshots →
+        // ClearBlock-via-AfterTurnStart → energy reset → BeforeSideTurnStart →
+        // AfterSideTurnStart → reset X-cost capture. After this returns, the
+        // hand still has last turn's leftovers; nothing's been drawn yet.
+        await TurnHooks.PrepareSideTurnStart(harness, roundNumber);
 
         var hpBefore = harness.Dummy.CurrentHp;
 
-        // Reset PCS.Energy at turn start. PCS.Energy is the source of truth —
-        // cards like Offering / Bloodletting modify it via PlayerCmd.GainEnergy /
-        // LoseEnergy, and we read it back to give the policy an accurate budget.
-        Reflect.SetEnergy(pcs, Energy);
-
-        // Reset CapturedXValue on all hand cards so X-cost cards (Havoc-style)
-        // re-capture cleanly each play.
-        foreach (var c in hand.Cards)
-        {
-            if (c.EnergyCost.CostsX) c.EnergyCost.CapturedXValue = 0;
-        }
-
         // Chronological per-turn event log: every draw and every play (manual
-        // or auto) recorded in the order it actually happened.
+        // or auto) recorded in the order it actually happened. Started after
+        // side-turn-start so non-draw setup hooks don't pollute the timeline,
+        // but before the actual hand draw fires AfterCardDrawn.
         var events = new List<PlayCapture.Event>();
         PlayCapture.Start(events);
 
-        // Use CardPileCmd.Draw so Hook.AfterCardDrawn fires — that's what powers
-        // like Hellraiser hook into to autoplay Strikes mid-draw.
-        int needed = HandSize - hand.Cards.Count;
-        if (needed > 0)
-            await CardPileCmd.Draw(harness.Ctx, needed, harness.Player);
+        // Player-turn-start half: AfterEnergyReset → BeforeHandDraw →
+        // ModifyHandDraw → Draw (fires AfterCardDrawn → recorded) →
+        // AfterPlayerTurnStart(Early/regular/Late). Mirrors the player-turn-
+        // start block in CombatManager.
+        await TurnHooks.PlayerTurnStartDraw(harness, HandSize);
 
         await PlayPhase(harness, pcs, policyRng);
 
         PlayCapture.Stop();
         var hpAfter = harness.Dummy.CurrentHp;
 
-        // End-of-turn: dump hand to discard.
-        foreach (var c in hand.Cards.ToList())
-        {
-            hand.RemoveInternal(c);
-            discard.AddInternal(c);
-        }
-
-        // Fire end-of-turn hooks for both sides so power durations
-        // (Vulnerable, Weak, Frail, ...) tick down as in real combat.
-        await TurnHooks.FireAfterTurnEnd(harness, CombatSide.Player);
-        await TurnHooks.FireAfterTurnEnd(harness, CombatSide.Enemy);
+        // Full game-flow end-of-turn: BeforeTurnEnd hooks → exhaust Ethereal →
+        // trigger TurnEndInHand cards → BeforeFlush hooks → discard via
+        // CardPileCmd.Add (fires AfterCardDiscarded so Tingsha/ToughBandages work) →
+        // EndOfTurnCleanup → AfterTurnEnd. Mirrors EndPlayerTurnPhaseOneInternal.
+        await TurnHooks.EndOfPlayerTurn(harness);
 
         // Heal dummy back to full so HP doesn't ever hit 0.
         Reflect.HealToFull(harness.Dummy);

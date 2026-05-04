@@ -22,8 +22,11 @@ internal sealed class AutoCardSelector : ICardSelector
     public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
     {
         var list = options.ToList();
-        var picked = list.Take(System.Math.Max(minSelect, System.Math.Min(maxSelect, list.Count)));
-        return Task.FromResult<IEnumerable<CardModel>>(picked.ToList());
+        var picked = list.Take(System.Math.Max(minSelect, System.Math.Min(maxSelect, list.Count))).ToList();
+        // Record the first picked card as the subject of the current play event (e.g. Nightmare → selected card).
+        if (picked.Count > 0)
+            PlayCapture.RecordEffectSubject(picked[0]);
+        return Task.FromResult<IEnumerable<CardModel>>(picked);
     }
 
     public CardModel? GetSelectedCardReward(IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)

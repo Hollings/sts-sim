@@ -17,6 +17,7 @@ namespace StS2Sim;
 internal sealed class SimJob
 {
     public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
+    public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public required string CharacterId { get; init; }
     public required Func<object, Task> BroadcastEvent { get; init; }
 
@@ -40,11 +41,15 @@ internal sealed class SimJob
 
         try
         {
+            var characterType = Harness.ResolveCharacterType(CharacterId)
+                ?? typeof(MegaCrit.Sts2.Core.Models.Characters.Ironclad);
             var policy = new EpsilonGreedyPolicy(new HighestDamagePolicy(), Epsilon);
             var runner = new BestOfKRunner
             {
                 DeckName = CharacterId,
                 Deck = Deck,
+                Relics = Relics,
+                CharacterType = characterType,
                 Policy = policy,
                 Seeds = Seeds,
                 InnerSamples = K,
@@ -111,6 +116,7 @@ internal sealed class SimJob
                 kind = e.Kind == PlayCapture.EventKind.Draw ? "draw" : "play",
                 label = e.Label,
                 auto = e.Auto,
+                subject = e.SubjectLabel,
             }),
         }),
     });

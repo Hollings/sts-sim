@@ -12,6 +12,8 @@ namespace StS2Sim;
 ///   - <c>Hook.AfterCardDrawn</c> Harmony prefix → "draw" event
 ///   - <c>CardCmd.AutoPlay</c> Harmony prefix    → "play" event (auto)
 ///   - <see cref="DamagePerTurnSim"/> policy loop → "play" event (manual)
+///   - <c>CardCmd.Preview</c> Harmony prefix      → sets SubjectLabel on last event
+///   - <see cref="AutoCardSelector"/>             → sets SubjectLabel on last event
 ///
 /// Thread-static: each parallel sim worker (if/when we add them) gets its
 /// own capture sink without locking.
@@ -20,9 +22,23 @@ internal static class PlayCapture
 {
     public enum EventKind { Draw, Play }
 
-    public sealed record Event(EventKind Kind, string Label, bool Auto);
+    public sealed class Event
+    {
+        public EventKind Kind { get; }
+        public string Label { get; }
+        public bool Auto { get; }
+        public string? SubjectLabel { get; set; }
+
+        public Event(EventKind kind, string label, bool auto)
+        {
+            Kind = kind;
+            Label = label;
+            Auto = auto;
+        }
+    }
 
     [System.ThreadStatic] private static List<Event>? _sink;
+    [System.ThreadStatic] private static Event? _lastEvent;
 
     public static void Start(List<Event> sink) => _sink = sink;
     public static void Stop() => _sink = null;
@@ -30,18 +46,34 @@ internal static class PlayCapture
     public static void RecordDraw(CardModel card)
     {
         if (_sink == null) return;
-        _sink.Add(new Event(EventKind.Draw, CardLabels.Format(card), Auto: false));
+        var ev = new Event(EventKind.Draw, CardLabels.Format(card), auto: false);
+        _lastEvent = ev;
+        _sink.Add(ev);
     }
 
     public static void RecordAutoPlay(CardModel card)
     {
         if (_sink == null) return;
-        _sink.Add(new Event(EventKind.Play, CardLabels.Format(card), Auto: true));
+        var ev = new Event(EventKind.Play, CardLabels.Format(card), auto: true);
+        _lastEvent = ev;
+        _sink.Add(ev);
     }
 
     public static void RecordManualPlay(CardModel card)
     {
         if (_sink == null) return;
-        _sink.Add(new Event(EventKind.Play, CardLabels.Format(card), Auto: false));
+        var ev = new Event(EventKind.Play, CardLabels.Format(card), auto: false);
+        _lastEvent = ev;
+        _sink.Add(ev);
+    }
+
+    /// <summary>
+    /// Called when a card play affects another card (Hidden Gem buffs a card,
+    /// Nightmare selects a card, etc.). Sets SubjectLabel on the last event.
+    /// </summary>
+    public static void RecordEffectSubject(CardModel card)
+    {
+        if (_sink == null || _lastEvent == null) return;
+        _lastEvent.SubjectLabel = CardLabels.Format(card);
     }
 }

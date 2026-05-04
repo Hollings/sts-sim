@@ -23,7 +23,6 @@ internal sealed class ConvergenceRunner
     public required IPlayPolicy Policy { get; init; }
     public int Turns { get; init; } = 5;
     public int HandSize { get; init; } = 5;
-    public int Energy { get; init; } = 3;
     public TimeSpan? TimeBudget { get; init; }
     public int? TrialBudget { get; init; }
     public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromSeconds(1);
@@ -37,7 +36,6 @@ internal sealed class ConvergenceRunner
             Deck = Deck,
             Turns = Turns,
             HandSize = HandSize,
-            Energy = Energy,
             Policy = Policy,
         };
 
@@ -74,7 +72,6 @@ internal sealed class ConvergenceRunner
                 Deck = sim.Deck,
                 Turns = sim.Turns,
                 HandSize = sim.HandSize,
-                Energy = sim.Energy,
                 Policy = sim.Policy,
                 PolicyRngSeed = policyRngSeed,
             };

@@ -220,6 +220,7 @@ internal sealed class SimServer
         var job = new SimJob
         {
             Deck = deckEntries,
+            Relics = deck.Relics.Where(r => !string.IsNullOrEmpty(r)).ToList(),
             CharacterId = deck.CharacterId,
             BroadcastEvent = BroadcastEvent,
             Seeds = req.Seeds,

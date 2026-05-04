@@ -43,6 +43,11 @@ internal static class Program
                 return 0;
             }
 
+            // "silent-tests" runs the per-card Silent battery (88+ tests) and
+            // returns non-zero if any test crashed the harness.
+            if (args.Length > 0 && args[0] == "silent-tests")
+                return await SilentTests.SilentTestsRunner.RunAll();
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

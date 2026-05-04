@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using HarmonyLib;
@@ -7,6 +8,8 @@ using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 
@@ -39,6 +42,14 @@ internal static class GodotShims
         // animation duration math which collapses to zero in NonInteractiveMode anyway.
         PatchPrefix(harmony, typeof(Godot.Time), "GetTicksMsec", nameof(Time_GetTicksMsec_Prefix));
 
+        // CardCmd.Preview is called by cards like Hidden Gem to highlight the card
+        // they buffed. Capture the previewed card as the "subject" of the last event
+        // so the UI can display "Hidden Gem → Shiv+".
+        harmony.Patch(
+            AccessTools.Method(typeof(CardCmd), "Preview",
+                new[] { typeof(CardModel), typeof(float), typeof(CardPreviewStyle) }),
+            prefix: new HarmonyMethod(GetPrefix(nameof(CardCmd_Preview_Prefix))));
+
         // CardCmd.AutoPlay fires for any auto-played card (Hellraiser strikes,
         // Havoc top-of-deck plays, etc.). The policy loop only sees plays it
         // chose itself, so without this autoplays would go unrecorded in the
@@ -50,6 +61,20 @@ internal static class GodotShims
         // style autoplay fires, giving us a chronological event timeline:
         // "drew Pommel Strike" → "played Pommel Strike (auto)" → "drew Strike".
         PatchPrefix(harmony, typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterCardDrawn", nameof(Hook_AfterCardDrawn_Prefix));
+
+        // LocManager.Instance is null in headless mode (never initialized without Godot).
+        // Cards like Nightmare call SelectionScreenPrompt which calls LocString.Exists(),
+        // and some paths call GetFormattedText/GetRawText for display strings.
+        // Return safe fallbacks so cards with selection prompts can still be played.
+        harmony.Patch(
+            AccessTools.Method(typeof(LocString), "Exists", new[] { typeof(string), typeof(string) }),
+            prefix: new HarmonyMethod(GetPrefix(nameof(LocString_Exists_Prefix))));
+        harmony.Patch(
+            AccessTools.Method(typeof(LocString), "GetFormattedText"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(LocString_GetText_Prefix))));
+        harmony.Patch(
+            AccessTools.Method(typeof(LocString), "GetRawText"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(LocString_GetText_Prefix))));
 
         // CardPileCmd.Shuffle calls Engine.GetMainLoop() for animation pacing
         // (sleeps between adding cards back to draw pile). We replace the whole
@@ -103,11 +128,31 @@ internal static class GodotShims
         return false;
     }
 
+    private static bool CardCmd_Preview_Prefix(CardModel card)
+    {
+        PlayCapture.RecordEffectSubject(card);
+        return false; // skip visual preview entirely in headless mode
+    }
+
     private static void CardCmd_AutoPlay_Prefix(CardModel card)
         => PlayCapture.RecordAutoPlay(card);
 
     private static void Hook_AfterCardDrawn_Prefix(CardModel card)
         => PlayCapture.RecordDraw(card);
+
+    private static bool LocString_Exists_Prefix(ref bool __result)
+    {
+        if (LocManager.Instance != null) return true; // let original run
+        __result = true; // pretend every key exists so callers don't throw
+        return false;
+    }
+
+    private static bool LocString_GetText_Prefix(ref string __result)
+    {
+        if (LocManager.Instance != null) return true;
+        __result = string.Empty;
+        return false;
+    }
 
     private static bool Creature_ToString_Prefix(Creature __instance, ref string __result)
     {
@@ -122,11 +167,11 @@ internal static class GodotShims
     // the original: pull discards, shuffle by player's RNG, re-add to draw pile.
     private static bool CardPileCmd_Shuffle_Prefix(PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
-        __result = ShuffleSync(player);
+        __result = ShuffleSync(choiceContext, player);
         return false;
     }
 
-    private static Task ShuffleSync(Player player)
+    private static Task ShuffleSync(PlayerChoiceContext choiceContext, Player player)
     {
         var pcs = player.PlayerCombatState;
         if (pcs == null) return Task.CompletedTask;
@@ -162,6 +207,17 @@ internal static class GodotShims
                 draw.AddInternal(c, -1, silent: true);
             }
         }
-        return Task.CompletedTask;
+
+        // Fire AfterShuffle on each listener — StratagemPower, BiiigHug, TheAbacus
+        // hook here. Without this, those cards/relics are silent during sims.
+        return FireAfterShuffle(choiceContext, player);
+    }
+
+    private static async Task FireAfterShuffle(PlayerChoiceContext choiceContext, Player player)
+    {
+        var combat = player.Creature.CombatState;
+        if (combat == null) return;
+        foreach (var listener in combat.IterateHookListeners().ToList())
+            await listener.AfterShuffle(choiceContext, player);
     }
 }

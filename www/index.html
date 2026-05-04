@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>StS2 Sim — Deck Analyzer</title>
 <style>
+  /* ─── Theme ─────────────────────────────────────────────── */
   :root {
     --bg: #183749;
     --bg-2: #0f2733;
@@ -13,42 +14,48 @@
     --accent-2: #d4a142;
     --good: #5fb04f;
     --bad: #c75450;
+    --border: #21455a;
   }
+
+  /* ─── Page layout ───────────────────────────────────────── */
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
   header { padding: 16px 24px; border-bottom: 2px solid var(--accent); }
   header h1 { margin: 0; font-size: 20px; letter-spacing: 0.5px; }
   header .sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
   main { display: grid; grid-template-columns: 360px 1fr; gap: 0; min-height: calc(100vh - 60px); }
-  aside { padding: 16px 24px; border-right: 1px solid #21455a; background: var(--bg-2); overflow-y: auto; }
+  aside { padding: 16px 24px; border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; }
   section { padding: 16px 24px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent-2); margin: 24px 0 8px; border-bottom: 1px solid #21455a; padding-bottom: 4px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent-2); margin: 24px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
   h2:first-child { margin-top: 0; }
-  .row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dotted #21455a; }
+
+  /* ─── Sidebar: deck/relics/run-info rows ────────────────── */
+  .row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dotted var(--border); }
   .row:last-child { border-bottom: none; }
   .row span:last-child { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
   ul.cards { list-style: none; padding: 0; margin: 0; }
   ul.cards li { padding: 4px 8px; display: flex; justify-content: space-between; border-radius: 3px; }
   ul.cards li:nth-child(even) { background: rgba(255,255,255,0.03); }
   ul.cards .count { color: var(--accent-2); font-weight: bold; }
-  .config { background: var(--bg-2); padding: 12px; border-radius: 4px; border: 1px solid #21455a; }
+
+  /* ─── Sim config form ───────────────────────────────────── */
+  .config { background: var(--bg-2); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
   .config .field { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
-  .config input { background: var(--bg); color: var(--fg); border: 1px solid #21455a; padding: 4px 8px; border-radius: 3px; width: 90px; font: inherit; }
+  .config input { background: var(--bg); color: var(--fg); border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; width: 90px; font: inherit; }
+
+  /* ─── Buttons ───────────────────────────────────────────── */
   button { background: var(--accent); color: var(--fg); border: none; padding: 10px 20px; font: inherit; font-weight: bold; letter-spacing: 1px; border-radius: 3px; cursor: pointer; text-transform: uppercase; }
   button:hover { background: #a52218; }
   button:disabled { background: #555; cursor: not-allowed; }
+  button.stop { background: #555; }
+  button.stop:hover { background: #666; }
   .button-row { display: flex; gap: 8px; margin-top: 12px; }
-  .stop { background: #555; }
-  .stop:hover { background: #666; }
+
+  /* ─── Live stats + verdict + progress ───────────────────── */
   .stat { display: flex; justify-content: space-between; padding: 8px 12px; background: var(--bg-2); border-left: 3px solid var(--accent-2); margin-bottom: 4px; }
   .stat .label { color: var(--fg-dim); }
   .stat .value { font-weight: bold; font-variant-numeric: tabular-nums; }
-  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; position: relative; height: 260px; }
-  .chart-box h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--accent-2); }
-  .hist-box { height: 180px; }
-  .chart-box canvas { max-height: calc(100% - 24px); }
-  .progress-bar { height: 6px; background: #21455a; border-radius: 3px; overflow: hidden; margin: 8px 0; }
+  .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 8px 0; }
   .progress-bar > div { height: 100%; background: var(--accent-2); transition: width 0.2s; }
   .status { font-size: 12px; color: var(--fg-dim); }
   .verdict { padding: 12px; border-radius: 4px; margin-top: 12px; font-weight: bold; }
@@ -57,23 +64,33 @@
   .verdict.done { background: #1a4329; color: var(--good); }
   .verdict.error { background: #4a1c1c; color: var(--bad); }
   .empty { color: var(--fg-dim); font-style: italic; padding: 8px; }
+
+  /* ─── Charts ────────────────────────────────────────────── */
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; position: relative; height: 260px; }
+  .chart-box.hist-box { height: 180px; }
+  .chart-box h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--accent-2); }
+  .chart-box canvas { max-height: calc(100% - 24px); }
+
+  /* ─── Best combat: turn cards + event timeline ──────────── */
   .best-headline { font-size: 11px; color: var(--good); font-weight: normal; margin-left: 8px; letter-spacing: 0; text-transform: none; }
   .best-combat { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
   .turn-card { background: var(--bg-2); border-left: 3px solid var(--accent-2); padding: 8px 12px; border-radius: 3px; }
-  .turn-card .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #21455a; }
+  .turn-card .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
   .turn-card .turn-num { font-weight: bold; color: var(--accent-2); }
   .turn-card .turn-dmg { font-variant-numeric: tabular-nums; }
   .event-list { display: flex; flex-direction: column; gap: 1px; }
   .ev { display: flex; align-items: center; gap: 6px; padding: 2px 4px; font-size: 12px; border-radius: 2px; }
   .ev .icon { width: 12px; text-align: center; font-weight: bold; flex-shrink: 0; }
   .ev .ev-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev .ev-subject { font-size: 11px; color: var(--fg-dim); white-space: nowrap; margin-right: 4px; }
+  .ev .auto-tag { font-size: 9px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
   .ev.draw { color: var(--fg-dim); }
   .ev.draw .icon { color: #6da4c4; }
   .ev.play.manual { color: var(--fg); background: rgba(139,25,19,0.35); }
   .ev.play.manual .icon { color: var(--accent-2); }
   .ev.play.auto { color: var(--fg); background: rgba(212,161,66,0.18); }
   .ev.play.auto .icon { color: var(--accent-2); }
-  .auto-tag { font-size: 9px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 </style>
 </head>
 <body>
