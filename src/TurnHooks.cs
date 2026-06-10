@@ -168,8 +168,13 @@ internal static class TurnHooks
     /// <c>CombatManager.EndPlayerTurnPhaseOneInternal</c> + the flush block.
     /// Replaces our previous manual "dump hand to discard" code which skipped
     /// every hook, every Ethereal exhaust, and every turn-end-in-hand effect.
+    ///
+    /// <paramref name="tickEnemySide"/>: in dummy mode (no enemy turns exist)
+    /// we fire the enemy-side AfterTurnEnd here so enemy debuffs (Vulnerable)
+    /// still tick once per round. In encounter mode the real enemy turn fires
+    /// it — passing true there would double-tick every enemy power.
     /// </summary>
-    public static async Task EndOfPlayerTurn(Harness.CombatHarness h)
+    public static async Task EndOfPlayerTurn(Harness.CombatHarness h, bool tickEnemySide = true)
     {
         await FireBeforeTurnEnd(h, CombatSide.Player);
 
@@ -181,7 +186,80 @@ internal static class TurnHooks
         h.Player.PlayerCombatState!.EndOfTurnCleanup();
 
         await FireAfterTurnEnd(h, CombatSide.Player);
+        if (tickEnemySide)
+            await FireAfterTurnEnd(h, CombatSide.Enemy);
+    }
+
+    // ─── Enemy turn (encounter mode) ─────────────────────────────────────────
+
+    /// <summary>
+    /// Re-roll every living enemy's next move (their visible intent). The game
+    /// does this at the start of each player turn so the player can react;
+    /// firing it there also means a policy could read intents later. Safe to
+    /// call on round 1: the state machine won't advance before the first move
+    /// is performed.
+    /// </summary>
+    public static void RollEnemyMoves(Harness.CombatHarness h)
+    {
+        // State.Enemies, not the harness's initial list: encounters can spawn
+        // minions mid-combat (Fabricator's bots) — they arrive via the game's
+        // own CreatureCmd.Spawn → CombatManager.AddCreature path, and would
+        // throw UnsetMove on their first TakeTurn if we never rolled for them.
+        foreach (var enemy in h.State.Enemies.ToList())
+        {
+            if (enemy.IsAlive && enemy.Monster != null)
+                enemy.PrepareForNextTurn(h.State.PlayerCreatures);
+        }
+    }
+
+    /// <summary>
+    /// The full enemy half-turn, mirroring CombatManager's SwitchSides →
+    /// StartTurn(enemy side) → ExecuteEnemyTurn → EndEnemyTurnInternal →
+    /// SwitchSides flow. <paramref name="onEnemyMove"/> fires after each
+    /// enemy acts (for the event timeline). Returns early if the player dies.
+    /// </summary>
+    public static async Task EnemyTurn(
+        Harness.CombatHarness h, int roundNumber,
+        Action<MegaCrit.Sts2.Core.Entities.Creatures.Creature, string>? onEnemyMove = null)
+    {
+        var state = h.State;
+
+        // Switch to enemy side. OnSideSwitch clears each monster's
+        // SpawnedThisTurn flag — without it TakeTurn() skips the move.
+        state.CurrentSide = CombatSide.Enemy;
+        foreach (var c in state.Creatures) c.OnSideSwitch();
+
+        // Enemy-side turn start: power snapshots, block clear, side hooks.
+        var enemiesStartingTurn = state.Enemies.Where(e => e.IsAlive).ToList();
+        foreach (var e in enemiesStartingTurn)
+            e.BeforeTurnStart(roundNumber, CombatSide.Enemy);
+        await FireBeforeSideTurnStart(h, CombatSide.Enemy);
+        foreach (var e in enemiesStartingTurn)
+            await e.AfterTurnStart(roundNumber, CombatSide.Enemy);
+        foreach (var e in enemiesStartingTurn)
+            await FireOnAll(h, l => l.AfterBlockCleared(e));
+        await FireAfterSideTurnStart(h, CombatSide.Enemy);
+
+        // Each enemy performs its rolled move through the real game pipeline.
+        foreach (var enemy in state.Enemies.ToList())
+        {
+            if (!enemy.IsAlive || !state.ContainsCreature(enemy)) continue;
+            var moveId = enemy.Monster?.NextMove.Id ?? "?";
+            await enemy.TakeTurn();
+            onEnemyMove?.Invoke(enemy, moveId);
+            if (!h.Player.Creature.IsAlive) break;
+        }
+
+        // End of enemy turn hooks. (The real game also runs the players'
+        // EndOfTurnCleanup here in EndEnemyTurnInternal; our EndOfPlayerTurn
+        // already did it — no cards get played in between, so it's equivalent.)
+        await FireBeforeTurnEnd(h, CombatSide.Enemy);
         await FireAfterTurnEnd(h, CombatSide.Enemy);
+
+        // Back to the player side; RoundNumber bumps via the next
+        // PrepareSideTurnStart call.
+        state.CurrentSide = CombatSide.Player;
+        foreach (var c in state.Creatures) c.OnSideSwitch();
     }
 
     // ─── Internal: per-player end-of-turn effects ────────────────────────────

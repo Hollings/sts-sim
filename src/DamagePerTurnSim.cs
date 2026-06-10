@@ -69,8 +69,6 @@ internal sealed class DamagePerTurnSim
 
     private async Task<TurnResult> RunSingleTurn(Harness.CombatHarness harness, int roundNumber, Random policyRng)
     {
-        var pcs = harness.Player.PlayerCombatState!;
-
         // Side-turn-start half: bump RoundNumber → BeforeTurnStart snapshots →
         // ClearBlock-via-AfterTurnStart → energy reset → BeforeSideTurnStart →
         // AfterSideTurnStart → reset X-cost capture. After this returns, the
@@ -92,7 +90,7 @@ internal sealed class DamagePerTurnSim
         // start block in CombatManager.
         await TurnHooks.PlayerTurnStartDraw(harness, HandSize);
 
-        await PlayPhase(harness, pcs, policyRng);
+        await RunPlayPhase(harness, Policy, policyRng, () => harness.Dummy);
 
         PlayCapture.Stop();
         var hpAfter = harness.Dummy.CurrentHp;
@@ -109,8 +107,22 @@ internal sealed class DamagePerTurnSim
         return new TurnResult(roundNumber, hpBefore - hpAfter, events);
     }
 
-    private async Task PlayPhase(Harness.CombatHarness harness, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, Random policyRng)
+    /// <summary>
+    /// The shared "policy plays cards until done" loop, used by both this sim
+    /// (vs the dummy) and <see cref="EncounterSim"/> (vs real enemies).
+    /// <paramref name="chooseEnemyTarget"/> picks the target for enemy-targeted
+    /// cards each play (returns null when no target remains → turn ends);
+    /// <paramref name="stop"/> can end the phase early (e.g. all enemies dead).
+    /// </summary>
+    internal static async Task RunPlayPhase(
+        Harness.CombatHarness harness,
+        IPlayPolicy policy,
+        Random policyRng,
+        Func<MegaCrit.Sts2.Core.Entities.Creatures.Creature?> chooseEnemyTarget,
+        Func<bool>? stop = null)
     {
+        var pcs = harness.Player.PlayerCombatState!;
+
         // No energy gate here: 0-cost cards (Shivs!) are playable at 0 energy,
         // exactly like the real game. The loop ends when the policy has nothing
         // playable left. The cap is a safety valve against a policy/engine
@@ -118,14 +130,24 @@ internal sealed class DamagePerTurnSim
         const int maxPlaysPerTurn = 500;
         for (int plays = 0; plays < maxPlaysPerTurn; plays++)
         {
-            var card = Policy.ChooseCard(harness, pcs.Energy, policyRng);
+            if (stop != null && stop()) break;
+            if (!harness.Player.Creature.IsAlive) break;
+
+            var card = policy.ChooseCard(harness, pcs.Energy, policyRng);
             if (card == null) break;
 
             if (card.EnergyCost.GetAmountToSpend() > pcs.Energy) break; // policy lied; bail
 
-            var target = card.TargetType == TargetType.Self
-                ? harness.Player.Creature
-                : harness.Dummy;
+            MegaCrit.Sts2.Core.Entities.Creatures.Creature? target;
+            if (card.TargetType == TargetType.Self)
+            {
+                target = harness.Player.Creature;
+            }
+            else
+            {
+                target = chooseEnemyTarget();
+                if (target == null) break;
+            }
             // SpendResources is the game's own pre-play debit (PlayCardAction
             // does the same): captures X on X-cost cards (Whirlwind spends all
             // energy instead of playing at X=0), debits energy/stars, and fires

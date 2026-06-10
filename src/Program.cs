@@ -57,6 +57,15 @@ internal static class Program
                 return 0;
             }
 
+            // "encounter-sweep" runs one short trial against EVERY encounter in
+            // the catalog and reports pass/crash per encounter — the empirical
+            // coverage map for encounter mode. Exit 2 if anything crashed.
+            if (args.Length > 0 && args[0] == "encounter-sweep")
+            {
+                Harness.Bootstrap();
+                return await EncounterSweep.RunAll();
+            }
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

@@ -41,6 +41,8 @@ internal sealed class SimJob
     public IReadOnlyList<Candidate> Candidates { get; init; } = Array.Empty<Candidate>();
     /// <summary>Human-readable description of the common deck edit, e.g. "−Defend ×1 · +Inflame ×1".</summary>
     public string? ChangeSummary { get; init; }
+    /// <summary>Null = damage vs dummy. Otherwise every phase fights this encounter.</summary>
+    public string? EncounterId { get; init; }
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public required string CharacterId { get; init; }
     public required Func<object, Task> BroadcastEvent { get; init; }
@@ -62,6 +64,9 @@ internal sealed class SimJob
         {
             type = "started",
             mode = IsCompare ? "compare" : IsAb ? "ab" : "single",
+            metric = EncounterId != null ? "score" : "damage",
+            encounterId = EncounterId,
+            encounterName = EncounterId != null ? CardLabels.PrettyName(EncounterId) : null,
             deckSize = Deck.Count,
             variantDeckSize = VariantDeck?.Count,
             abTest = IsAb, // legacy field, kept for wire compat
@@ -126,6 +131,7 @@ internal sealed class SimJob
             Deck = deck,
             Relics = Relics,
             CharacterType = characterType,
+            EncounterId = EncounterId,
             // Fresh policy per phase, but identical construction + identical
             // seed derivation inside the runner = a paired comparison.
             Policy = new EpsilonGreedyPolicy(new HighestDamagePolicy(), Epsilon),
@@ -154,11 +160,17 @@ internal sealed class SimJob
         ci95 = s.Ci95HalfWidth,
         bestOfBest = s.BestOfBest,
         worstSeedBest = s.WorstSeedBest,
+        winnableSeeds = s.WinnableSeeds,
+        winRate = s.WinnableSeeds is int w && s.PerSeedBests.Count > 0 ? (double?)w / s.PerSeedBests.Count : null,
         totalRuns = s.TotalRuns,
         elapsedSec = s.Elapsed.TotalSeconds,
         medianConvergenceK = s.MedianConvergenceK,
         maxConvergenceK = s.MaxConvergenceK,
     };
+
+    /// <summary>Fraction of seeds whose best outcome was a win; null in dummy mode.</summary>
+    private static double? WinRate(BestOfKRunner.Summary s)
+        => s.WinnableSeeds is int w && s.PerSeedBests.Count > 0 ? (double?)w / s.PerSeedBests.Count : null;
 
     /// <summary>Paired stats between two per-seed best series (B − A).</summary>
     private static (double Lift, double StdErr, double Z, int N) PairedDiff(
@@ -200,8 +212,10 @@ internal sealed class SimJob
             changeSummary = ChangeSummary,
             baseAvg = baseS.AvgOfBest,
             baseCi95 = baseS.Ci95HalfWidth,
+            baseWinRate = WinRate(baseS),
             variantAvg = varS.AvgOfBest,
             variantCi95 = varS.Ci95HalfWidth,
+            variantWinRate = WinRate(varS),
             lift,
             liftCi95 = ci95,
             liftPerTurn = Turns == 0 ? 0 : lift / Turns,
@@ -232,6 +246,7 @@ internal sealed class SimJob
                 label = c.Cand.Label,
                 avg = c.Summary.AvgOfBest,
                 ci95 = c.Summary.Ci95HalfWidth,
+                winRate = WinRate(c.Summary),
                 lift,
                 liftCi95 = 1.96 * stdErr,
                 liftPerTurn = Turns == 0 ? 0 : lift / Turns,
@@ -296,8 +311,9 @@ internal sealed class SimJob
             baseCi95 = baseS.Ci95HalfWidth,
             results = results.Select(r => new
             {
-                r.phase, r.label, r.avg, r.ci95, r.lift, r.liftCi95, r.liftPerTurn, r.z, r.beatsBase,
+                r.phase, r.label, r.avg, r.ci95, r.winRate, r.lift, r.liftCi95, r.liftPerTurn, r.z, r.beatsBase,
             }).ToList(),
+            baseWinRate = WinRate(baseS),
             winnerLabel = winner.label,
             winnerVsRunnerUp,
             verdict,
@@ -315,6 +331,8 @@ internal sealed class SimJob
         index = p.SeedIndex,
         total = p.TotalSeeds,
         bestForSeed = p.BestForSeed,
+        bestForSeedWin = p.BestForSeedWin,
+        winnableSeeds = EncounterId != null ? (int?)p.WinnableSeedsSoFar : null,
         runningAvg = p.RunningAvg,
         runningStdErr = p.RunningStdErr,
         ci95 = 1.96 * p.RunningStdErr,
@@ -322,24 +340,35 @@ internal sealed class SimJob
         elapsedMs = (long)p.Elapsed.TotalMilliseconds,
     });
 
-    private void OnNewBest(string phase, string label, DamagePerTurnSim.TrialResult trial) => _ = BroadcastEvent(new
+    private void OnNewBest(string phase, string label, BestOfKRunner.TrialOutcome trial) => _ = BroadcastEvent(new
     {
         type = "newBest",
         phase,
         label,
         seed = trial.Seed,
-        totalDamage = trial.TotalDamage,
-        avgPerTurn = trial.AvgPerTurn,
+        // In dummy mode Score IS total damage; the field name is part of the
+        // wire contract so it stays. Encounter fields ride alongside.
+        totalDamage = trial.Score,
+        win = trial.Win,
+        playerHpRemaining = trial.PlayerHpRemaining,
+        playerMaxHp = trial.PlayerMaxHp,
+        enemyHpRemaining = trial.EnemyHpRemaining,
+        avgPerTurn = trial.Turns.Count == 0 ? 0 : (double)trial.Turns.Sum(t => t.Damage) / trial.Turns.Count,
         turns = trial.Turns.Select(t => new
         {
             turn = t.Turn,
             damage = t.Damage,
-            // Chronological event timeline: each entry is { kind: "draw"|"play",
-            // label, auto: true if this play came from an autoplay (Hellraiser
-            // strike etc.) }. Enables the UI to render cascades top-to-bottom.
+            // Chronological event timeline: each entry is { kind: "draw"|"play"|
+            // "enemy", label, auto, subject }. Enables the UI to render
+            // cascades and enemy moves top-to-bottom.
             events = t.Events.Select(e => new
             {
-                kind = e.Kind == PlayCapture.EventKind.Draw ? "draw" : "play",
+                kind = e.Kind switch
+                {
+                    PlayCapture.EventKind.Draw => "draw",
+                    PlayCapture.EventKind.EnemyMove => "enemy",
+                    _ => "play",
+                },
                 label = e.Label,
                 auto = e.Auto,
                 subject = e.SubjectLabel,

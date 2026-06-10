@@ -57,6 +57,7 @@ const renderStats = tiles => { $('stats').innerHTML = tiles.join(''); };
 
 let bestChart, avgChart, histChart;
 let mode = 'single';            // 'single' | 'ab' | 'compare'
+let metric = 'damage';          // 'damage' (dummy) | 'score' (encounter fight)
 let phaseDefs = [];             // [{key, label, color}] — index 0 is baseline
 let phaseIndexByKey = {};
 const seriesByPhase = new Map(); // key -> {best, avg, ciUpper, ciLower}
@@ -392,6 +393,47 @@ $('cand-input').addEventListener('keydown', ev => {
   if (ev.key === 'Enter') $('cand-add-btn').click();
 });
 
+async function loadEncounters() {
+  try {
+    const r = await fetch('/api/encounters');
+    if (!r.ok) return;
+    const d = await r.json();
+    const sel = $('cfg-encounter');
+    const saved = localStorage.getItem('sts2sim.cfg-encounter') || '';
+    // Group by act + room type for a readable dropdown.
+    const groups = new Map();
+    for (const e of d.encounters) {
+      const key = `${e.act} — ${e.roomType === 'Monster' ? 'Normal' : e.roomType}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    for (const [label, encounters] of groups) {
+      const og = document.createElement('optgroup');
+      og.label = label;
+      for (const e of encounters) {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        og.appendChild(opt);
+      }
+      sel.appendChild(og);
+    }
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+  } catch { /* dropdown just stays dummy-only */ }
+}
+
+$('cfg-encounter').addEventListener('change', () => {
+  localStorage.setItem('sts2sim.cfg-encounter', $('cfg-encounter').value);
+  const fight = $('cfg-encounter').value !== '';
+  $('cfg-turns-label').textContent = fight ? 'Max turns (cap = loss)' : 'Turns / combat';
+  // Sensible turn budget when toggling between modes (only adjust the value
+  // when it still looks like the other mode's default).
+  const turns = +$('cfg-turns').value;
+  if (fight && turns <= 10) $('cfg-turns').value = 30;
+  if (!fight && turns >= 20) $('cfg-turns').value = 5;
+  localStorage.setItem('sts2sim.cfg-turns', $('cfg-turns').value);
+});
+
 async function loadCardCatalog() {
   try {
     const r = await fetch('/api/cards');
@@ -462,19 +504,26 @@ const phaseDoneByKey = new Map(); // phase key -> phaseDone payload
 const eventHandlers = {
   started(e) {
     phaseDoneByKey.clear();
+    metric = e.metric || 'damage';
     const defs = [{ key: 'base', label: 'current deck' }];
     if (e.mode === 'ab') defs.push({ key: 'variant', label: e.changeSummary || 'variant' });
     if (e.mode === 'compare') e.candidates.forEach((label, i) => defs.push({ key: `cand${i}`, label }));
     configurePhases(e.mode || 'single', defs);
 
+    // Metric-aware axis labels: damage ceiling vs fight outcome score.
+    const yLabel = metric === 'score' ? 'outcome (+HP kept / −boss HP)' : 'best damage';
+    bestChart.options.scales.y.title.text = yLabel;
+    avgChart.options.scales.y.title.text = metric === 'score' ? 'avg outcome score' : 'avg-of-best damage';
+
     $('ab-panel').className = 'ab-panel hidden';
     $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
     $('best-headline').textContent = '';
+    const vsTxt = metric === 'score' ? ` vs ${e.encounterName}` : '';
     const cfg = `${e.seeds} seeds × K=${e.k}${e.patience ? ` (patience ${e.patience})` : ''}, ${e.turns} turns, ε=${e.epsilon}`;
     const head = e.mode === 'compare'
-      ? `Compare: ${e.candidates.join(' vs ')}${e.changeSummary ? ` (on top of ${e.changeSummary})` : ''}`
-      : e.mode === 'ab' ? `A/B: ${e.changeSummary || 'deck edit'}`
-      : 'Running';
+      ? `Compare${vsTxt}: ${e.candidates.join(' vs ')}${e.changeSummary ? ` (on top of ${e.changeSummary})` : ''}`
+      : e.mode === 'ab' ? `A/B${vsTxt}: ${e.changeSummary || 'deck edit'}`
+      : `Running${vsTxt}`;
     setVerdict('running', `${head} — ${cfg}`);
     $('status').textContent = phaseDefs.length > 1 ? `Phase 1/${phaseDefs.length}: current deck…` : 'Started…';
     $('prog').style.width = '0%';
@@ -514,8 +563,10 @@ const eventHandlers = {
       tiles.push(
         statTile(`Running avg-of-best${phaseCount > 1 ? ` (${phaseDefs[phaseIdx].label})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
         statTile('Last seed best', e.bestForSeed),
-        statTile('Total runs', e.totalRuns),
       );
+      if (metric === 'score' && e.winnableSeeds != null)
+        tiles.push(statTile('Winnable seeds', `${e.winnableSeeds} / ${e.index + 1} (${(100 * e.winnableSeeds / (e.index + 1)).toFixed(0)}%)`));
+      tiles.push(statTile('Total runs', e.totalRuns));
       renderStats(tiles);
     }
   },
@@ -530,14 +581,22 @@ const eventHandlers = {
 
   done(e) {
     updateCharts();
-    setVerdict('done', `Done: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} avg-of-best (${fmt(e.avgPerTurn)}/turn)`);
+    setVerdict('done', metric === 'score' && e.winRate != null
+      ? `Done: ${(e.winRate * 100).toFixed(0)}% of seeds winnable · avg outcome ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)}`
+      : `Done: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} avg-of-best (${fmt(e.avgPerTurn)}/turn)`);
     $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs · best seed: ${e.bestOfBest}, worst seed: ${e.worstSeedBest}`;
-    renderStats([
+    const tiles = [
       statTile('Avg-of-best', `${fmt(e.avgOfBest)} ± ${fmt(e.ci95)}`),
-      statTile('Per turn', fmt(e.avgPerTurn)),
+    ];
+    if (metric === 'score' && e.winRate != null)
+      tiles.push(statTile('Winnable seeds', `${e.winnableSeeds} (${(e.winRate * 100).toFixed(0)}%)`));
+    else
+      tiles.push(statTile('Per turn', fmt(e.avgPerTurn)));
+    tiles.push(
       statTile('Best / worst seed', `${e.bestOfBest} / ${e.worstSeedBest}`),
       statTile('Convergence (median K)', e.medianConvergenceK),
-    ]);
+    );
+    renderStats(tiles);
     setRunning(false);
   },
 
@@ -549,11 +608,12 @@ const eventHandlers = {
     const panel = $('ab-panel');
     panel.className = `ab-panel ${e.verdictClass}`;
     $('ab-verdict-line').textContent = e.verdict;
+    const winTxt = wr => wr != null ? ` · ${(wr * 100).toFixed(0)}% win` : '';
     $('ab-detail').innerHTML = [
       ['Change', e.changeSummary || '—'],
-      ['Baseline', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`],
-      ['Variant', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}`],
-      ['Lift', `${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)} (${sgn(e.lift)}${fmt(e.liftPerTurn)}/turn)`],
+      ['Baseline', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}${winTxt(e.baseWinRate)}`],
+      ['Variant', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}${winTxt(e.variantWinRate)}`],
+      ['Lift', `${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)}${metric === 'score' ? '' : ` (${sgn(e.lift)}${fmt(e.liftPerTurn)}/turn)`}`],
       ['z-score (paired)', fmt(e.z)],
     ].map(([label, value]) =>
       `<div><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(String(value))}</span></div>`
@@ -578,12 +638,15 @@ const eventHandlers = {
     $('ab-verdict-line').textContent = e.verdict;
 
     // Ranking table: candidates by lift vs current deck, then the skip row.
+    const fightMode = metric === 'score';
+    const winCell = wr => fightMode ? `<td>${wr != null ? (wr * 100).toFixed(0) + '%' : '—'}</td>` : '';
     const colorOf = label => phaseDefs.find(d => d.label === label)?.color || '#888';
     const rows = e.results.map((r, i) => `
       <tr class="${i === 0 && r.beatsBase ? 'winner' : ''}">
         <td>${i + 1}</td>
         <td><span class="swatch" style="background:${colorOf(r.label)}"></span>${escapeHtml(r.label)}</td>
         <td>${fmt(r.avg)} ± ${fmt(r.ci95)}</td>
+        ${winCell(r.winRate)}
         <td>${sgn(r.lift)}${fmt(r.lift)} ± ${fmt(r.liftCi95)}</td>
         <td>${fmt(r.z)}</td>
         <td>${r.beatsBase ? '<span class="chip good">beats deck</span>' : r.z < -1.96 ? '<span class="chip bad">worse</span>' : '<span class="chip">within noise</span>'}</td>
@@ -593,6 +656,7 @@ const eventHandlers = {
         <td>—</td>
         <td><span class="swatch" style="background:${colorOf('current deck')}"></span>skip (current deck)</td>
         <td>${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}</td>
+        ${winCell(e.baseWinRate)}
         <td>0</td><td>—</td><td></td>
       </tr>`;
     const wvr = e.winnerVsRunnerUp;
@@ -601,7 +665,7 @@ const eventHandlers = {
       : '';
     $('ab-detail').innerHTML = `
       <table class="rank-table">
-        <thead><tr><th>#</th><th>Card</th><th>avg-of-best</th><th>lift vs current</th><th>z</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Card</th><th>avg-of-best</th>${fightMode ? '<th>win %</th>' : ''}<th>lift vs current</th><th>z</th><th></th></tr></thead>
         <tbody>${rows}${skipRow}</tbody>
       </table>${wvrLine}`;
 
@@ -636,6 +700,10 @@ function renderEvent(ev) {
   if (ev.kind === 'draw') {
     return `<div class="ev draw"><span class="icon">↓</span><span class="ev-label">${escapeHtml(ev.label)}</span></div>`;
   }
+  if (ev.kind === 'enemy') {
+    const dmg = ev.subject ? ` <span class="ev-subject">${escapeHtml(ev.subject)}</span>` : '';
+    return `<div class="ev enemy"><span class="icon">⚔</span><span class="ev-label">${escapeHtml(ev.label)}</span>${dmg}</div>`;
+  }
   const cls = ev.auto ? 'ev play auto' : 'ev play manual';
   const subj = ev.subject ? ` <span class="ev-subject">→ ${escapeHtml(ev.subject)}</span>` : '';
   const tag = ev.auto ? '<span class="auto-tag">auto</span>' : '';
@@ -657,7 +725,12 @@ function renderTurnCard(t) {
 function renderBestCombat(e) {
   const seedHex = e.seed.toString(16).toUpperCase();
   const phaseTxt = phaseDefs.length > 1 && e.label ? `[${e.label}] ` : '';
-  $('best-headline').textContent = `${phaseTxt}${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${seedHex}`;
+  const headline = e.win != null
+    ? (e.win
+        ? `${phaseTxt}WIN with ${e.playerHpRemaining}/${e.playerMaxHp} HP in ${e.turns.length} turns — seed 0x${seedHex}`
+        : `${phaseTxt}best so far: LOSS, enemy at ${e.enemyHpRemaining} HP after ${e.turns.length} turns — seed 0x${seedHex}`)
+    : `${phaseTxt}${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${seedHex}`;
+  $('best-headline').textContent = headline;
   $('best-combat').innerHTML = e.turns.map(renderTurnCard).join('');
 }
 
@@ -681,6 +754,7 @@ $('run-btn').onclick = async () => {
     patience: +$('cfg-patience').value,
     turns: +$('cfg-turns').value,
     epsilon: +$('cfg-eps').value,
+    encounterId: $('cfg-encounter').value || null,
     ...changesPayload(),
   };
   try {
@@ -705,4 +779,5 @@ $('refresh-btn').onclick = () => loadDeck();
 initCharts();
 restoreConfig();
 loadDeck();
+loadEncounters();
 connectWs();

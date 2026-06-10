@@ -8,10 +8,16 @@ namespace StS2Sim;
 
 /// <summary>
 /// "Average of best-of-K" estimator. For each shuffle seed, run K random-play
-/// attempts and keep the best damage. Average those per-seed maxima across
+/// attempts and keep the best score. Average those per-seed maxima across
 /// many seeds. The result approximates "average outcome under near-optimal
 /// play", separating shuffle variance (kept) from play-decision variance
 /// (averaged out by maxing).
+///
+/// Two metrics, chosen by <see cref="EncounterId"/>:
+///  - null → damage vs the 9999-HP dummy over a fixed number of turns
+///    (<see cref="DamagePerTurnSim"/>); score = total damage.
+///  - set  → a full simulated fight against that encounter
+///    (<see cref="EncounterSim"/>); score = +HP kept on win / −boss HP on loss.
 /// </summary>
 internal sealed class BestOfKRunner
 {
@@ -20,6 +26,9 @@ internal sealed class BestOfKRunner
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public Type CharacterType { get; init; } = typeof(MegaCrit.Sts2.Core.Models.Characters.Ironclad);
     public IPlayPolicy Policy { get; init; } = new RandomPolicy();
+    /// <summary>Null = dummy damage mode. Otherwise a full fight vs this encounter.</summary>
+    public string? EncounterId { get; init; }
+    /// <summary>Dummy mode: turns per trial. Encounter mode: the turn cap (reaching it = loss).</summary>
     public int Turns { get; init; } = 5;
     public int HandSize { get; init; } = 5;
     public int Seeds { get; init; } = 100;
@@ -36,64 +45,108 @@ internal sealed class BestOfKRunner
     public bool Quiet { get; init; } = false;
     /// <summary>Fires after each seed completes K samples — for live UI updates.</summary>
     public Action<SeedProgress>? OnSeedDone { get; init; }
-    /// <summary>Fires when a new best-of-best damage trial is found (full per-turn breakdown).</summary>
-    public Action<DamagePerTurnSim.TrialResult>? OnNewBest { get; init; }
+    /// <summary>Fires when a new best-of-best trial is found (full per-turn breakdown).</summary>
+    public Action<TrialOutcome>? OnNewBest { get; init; }
     /// <summary>Optional cancellation — UI Stop button hooks here.</summary>
     public System.Threading.CancellationToken Cancellation { get; init; } = default;
+
+    /// <summary>
+    /// One trial's result, metric-agnostic. Win/PlayerHp/EnemyHp are only
+    /// meaningful in encounter mode (Win == null in dummy mode).
+    /// </summary>
+    public sealed record TrialOutcome(
+        uint Seed,
+        int Score,
+        bool? Win,
+        int PlayerHpRemaining,
+        int PlayerMaxHp,
+        int EnemyHpRemaining,
+        IReadOnlyList<DamagePerTurnSim.TurnResult> Turns);
 
     public sealed record SeedProgress(
         int SeedIndex,
         int TotalSeeds,
         int BestForSeed,
+        bool? BestForSeedWin,
         double RunningAvg,
         double RunningStdErr,
+        int WinnableSeedsSoFar,
         long TotalRuns,
         TimeSpan Elapsed);
+
+    private async Task<TrialOutcome> RunTrial(uint shuffleSeed, uint policySeed)
+    {
+        if (EncounterId == null)
+        {
+            var sim = new DamagePerTurnSim
+            {
+                DeckName = DeckName,
+                Deck = Deck,
+                Relics = Relics,
+                CharacterType = CharacterType,
+                Turns = Turns,
+                HandSize = HandSize,
+                Policy = Policy,
+                PolicyRngSeed = policySeed,
+            };
+            var r = await sim.RunSingleTrial(shuffleSeed);
+            return new TrialOutcome(shuffleSeed, r.TotalDamage, Win: null, 0, 0, 0, r.Turns);
+        }
+        else
+        {
+            var sim = new EncounterSim
+            {
+                Deck = Deck,
+                EncounterId = EncounterId,
+                Relics = Relics,
+                CharacterType = CharacterType,
+                MaxTurns = Turns,
+                HandSize = HandSize,
+                Policy = Policy,
+                PolicyRngSeed = policySeed,
+            };
+            var r = await sim.RunSingleTrial(shuffleSeed);
+            return new TrialOutcome(shuffleSeed, r.Score, r.Win, r.PlayerHpRemaining, r.PlayerMaxHp, r.EnemyHpRemaining, r.Turns);
+        }
+    }
 
     public async Task<Summary> Run()
     {
         var sw = Stopwatch.StartNew();
         var perSeedBest = new int[Seeds];
+        var perSeedBestWin = new bool?[Seeds];
         var perSeedSampleK = new int[Seeds]; // K at which best was first found, for convergence inspection
         int completed = 0;
         long totalRuns = 0;
         var lastPrint = TimeSpan.Zero;
-        DamagePerTurnSim.TrialResult? globalBest = null;
+        TrialOutcome? globalBest = null;
         // Running sums for progress stats — avoids re-scanning the per-seed
         // array on every seed (O(n^2) over a long run).
         double runningSum = 0, runningSumSq = 0;
         int runningMax = int.MinValue;
+        int winnableSeeds = 0;
 
-        if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={Policy.Name} | seeds={Seeds} × K={InnerSamples} ===");
+        if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={Policy.Name} | seeds={Seeds} × K={InnerSamples}{(EncounterId != null ? $" | vs {EncounterId}" : "")} ===");
 
         for (int s = 0; s < Seeds; s++)
         {
             var shuffleSeed = unchecked((uint)(s * 0x9E3779B1u + 0xC0FFEEu));
             int seedBest = int.MinValue;
+            bool? seedBestWin = null;
             int firstFoundAt = 0;
 
             for (int k = 0; k < InnerSamples; k++)
             {
                 var policySeed = unchecked((uint)((s * 1024 + k) * 0x85EBCA77u + 0xBADCAFEu));
-                var sim = new DamagePerTurnSim
-                {
-                    DeckName = DeckName,
-                    Deck = Deck,
-                    Relics = Relics,
-                    CharacterType = CharacterType,
-                    Turns = Turns,
-                    HandSize = HandSize,
-                    Policy = Policy,
-                    PolicyRngSeed = policySeed,
-                };
-                var result = await sim.RunSingleTrial(shuffleSeed);
+                var result = await RunTrial(shuffleSeed, policySeed);
                 totalRuns++;
-                if (result.TotalDamage > seedBest)
+                if (result.Score > seedBest)
                 {
-                    seedBest = result.TotalDamage;
+                    seedBest = result.Score;
+                    seedBestWin = result.Win;
                     firstFoundAt = k + 1;
                 }
-                if (globalBest == null || result.TotalDamage > globalBest.TotalDamage)
+                if (globalBest == null || result.Score > globalBest.Score)
                 {
                     globalBest = result;
                     OnNewBest?.Invoke(result);
@@ -102,11 +155,13 @@ internal sealed class BestOfKRunner
                     break; // this seed has gone Patience samples without improving
             }
             perSeedBest[s] = seedBest;
+            perSeedBestWin[s] = seedBestWin;
             perSeedSampleK[s] = firstFoundAt;
             completed = s + 1;
             runningSum += seedBest;
             runningSumSq += (double)seedBest * seedBest;
             if (seedBest > runningMax) runningMax = seedBest;
+            if (seedBestWin == true) winnableSeeds++;
 
             if (OnSeedDone != null)
             {
@@ -114,7 +169,7 @@ internal sealed class BestOfKRunner
                 var rAvg = runningSum / n;
                 var rVar = n == 1 ? 0 : Math.Max(0, runningSumSq - runningSum * runningSum / n) / (n - 1);
                 var rStdErr = Math.Sqrt(rVar) / Math.Sqrt(n);
-                OnSeedDone(new SeedProgress(s, Seeds, seedBest, rAvg, rStdErr, totalRuns, sw.Elapsed));
+                OnSeedDone(new SeedProgress(s, Seeds, seedBest, seedBestWin, rAvg, rStdErr, winnableSeeds, totalRuns, sw.Elapsed));
             }
 
             if (!Quiet && sw.Elapsed - lastPrint >= ProgressInterval)
@@ -143,7 +198,9 @@ internal sealed class BestOfKRunner
         {
             Console.WriteLine();
             Console.WriteLine($"  Done. {totalRuns} runs in {sw.Elapsed.TotalSeconds:F1}s ({totalRuns / sw.Elapsed.TotalSeconds:F0}/s)");
-            Console.WriteLine($"  Avg-of-best:        {avg:F2} ± {ci95:F2}  (95% CI)  ({avg / Turns:F2}/turn)");
+            Console.WriteLine($"  Avg-of-best:        {avg:F2} ± {ci95:F2}  (95% CI)");
+            if (EncounterId != null)
+                Console.WriteLine($"  Winnable seeds:     {winnableSeeds}/{completed} ({(completed == 0 ? 0 : 100.0 * winnableSeeds / completed):F0}%)");
             Console.WriteLine($"  Std deviation across seeds: {stdDev:F2} (variance source: shuffle luck)");
             Console.WriteLine($"  Best/worst seed:    {best} / {worstSeedBest}");
             Console.WriteLine($"  Convergence: median seed found its best at K={medianFoundAt}, slowest at K={maxFoundAt}");
@@ -171,6 +228,7 @@ internal sealed class BestOfKRunner
             Elapsed = sw.Elapsed,
             TotalRuns = totalRuns,
             PerSeedBests = bests,
+            WinnableSeeds = EncounterId != null ? winnableSeeds : null,
         };
     }
 
@@ -190,8 +248,10 @@ internal sealed class BestOfKRunner
         public required int MaxConvergenceK { get; init; }
         public required TimeSpan Elapsed { get; init; }
         public required long TotalRuns { get; init; }
-        /// <summary>Per-seed best damage, in seed order. Lets A/B callers run a
+        /// <summary>Per-seed best score, in seed order. Lets A/B callers run a
         /// paired test (same seed index = same shuffle seed on both sides).</summary>
         public required IReadOnlyList<int> PerSeedBests { get; init; }
+        /// <summary>Encounter mode: seeds whose best outcome was a win. Null in dummy mode.</summary>
+        public required int? WinnableSeeds { get; init; }
     }
 }

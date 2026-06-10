@@ -81,6 +81,99 @@ internal static class GodotShims
         // method with a synchronous shuffle that does the same logical work
         // without ever touching SceneTree.
         PatchPrefix(harmony, typeof(CardPileCmd), "Shuffle", nameof(CardPileCmd_Shuffle_Prefix));
+
+        // NGame.Instance (the root UI node) is dereferenced WITHOUT null checks
+        // in several monster moves — Vantom's Dismember calls
+        // NGame.Instance.DoHitStop, Amalgamator calls ScreenShakeTrauma, etc.
+        // Plant a constructor-skipped instance (no Godot native init runs) and
+        // no-op every screen-effect member that game code calls on it.
+        var ngame = typeof(MegaCrit.Sts2.Core.Nodes.NGame);
+        var instanceBacking = ngame.GetField("<Instance>k__BackingField", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("NGame.Instance backing field not found");
+        instanceBacking.SetValue(null, System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(ngame));
+        PatchPrefix(harmony, ngame, "ScreenShake", nameof(NoOp_Prefix));
+        PatchPrefix(harmony, ngame, "ScreenRumble", nameof(NoOp_Prefix));
+        PatchPrefix(harmony, ngame, "ScreenShakeTrauma", nameof(NoOp_Prefix));
+        PatchPrefix(harmony, ngame, "DoHitStop", nameof(NoOp_Prefix));
+        harmony.Patch(
+            AccessTools.PropertyGetter(ngame, "CurrentRunNode"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NGame_CurrentRunNode_Prefix))));
+        // DecimillipedeSegment measures the screen via GetViewportRect (native).
+        // Declared on CanvasItem (Control only inherits it).
+        harmony.Patch(
+            AccessTools.Method(typeof(Godot.CanvasItem), "GetViewportRect"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(GetViewportRect_Prefix))));
+
+        // NCombatRoom.Instance (=> NRun.Instance?.CombatRoom, null headless) is
+        // also dereferenced without null checks in ~40 monster/card callsites
+        // (SlumberingBeetle.AfterAddedToRoom, Flyconid, KinFollower, ...). Serve
+        // a constructor-skipped stub from the getter and null/no-op the members
+        // those callsites touch — their RESULTS are almost always null-checked.
+        var ncombatRoom = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom);
+        harmony.Patch(
+            AccessTools.PropertyGetter(ncombatRoom, "Instance"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_Instance_Prefix))));
+        harmony.Patch(
+            AccessTools.Method(ncombatRoom, "GetCreatureNode"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_GetCreatureNode_Prefix))));
+        PatchPrefix(harmony, ncombatRoom, "RadialBlur", nameof(NoOp_Prefix));
+        harmony.Patch(
+            AccessTools.PropertyGetter(ncombatRoom, "Background"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_Background_Prefix))));
+        harmony.Patch(
+            AccessTools.PropertyGetter(ncombatRoom, "CombatVfxContainer"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_VfxContainer_Prefix))));
+
+        // Mid-combat spawns (Fabricator's bots, Fogmog) call the UI-side
+        // NCombatRoom.AddCreature to build the creature's visual node — pure
+        // rendering, NREs on the stub. The logic-side CombatManager.AddCreature
+        // is what actually matters and runs separately.
+        PatchPrefix(harmony, ncombatRoom, "AddCreature", nameof(NoOp_Prefix));
+
+        // Knowledge Demon (and anything else forcing a "choose a card" screen)
+        // calls CardSelectCmd.FromChooseACardScreen, which drives a UI flow.
+        // Auto-pick the first option, mirroring AutoCardSelector's heuristic.
+        PatchPrefix(harmony, typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd),
+            "FromChooseACardScreen", nameof(FromChooseACardScreen_Prefix));
+
+        // Kaiser Crab is rendered as a background scene: BOTH its monsters
+        // (Rocket, Crusher) drive every move through a Background property
+        // that resolves a UI node. Serve an uninitialized stub from those
+        // properties and no-op the stub's animation methods.
+        var crabBg = typeof(MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground);
+        foreach (var monsterType in new[]
+        {
+            typeof(MegaCrit.Sts2.Core.Models.Monsters.Rocket),
+            typeof(MegaCrit.Sts2.Core.Models.Monsters.Crusher),
+        })
+        {
+            harmony.Patch(
+                AccessTools.PropertyGetter(monsterType, "Background"),
+                prefix: new HarmonyMethod(GetPrefix(nameof(KaiserCrabBackground_Prefix))));
+        }
+        // No-op every public method the stub could be asked to perform —
+        // they're all animation drivers (PlayAttackAnim, PlayHurtAnim,
+        // PlayRightSideChargeUpAnim, ...). Enumerating them by hand is
+        // whack-a-mole; the class is pure visuals.
+        foreach (var method in crabBg.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        {
+            if (method.IsSpecialName) continue; // property accessors
+            if (method.ReturnType == typeof(Task))
+                harmony.Patch(method, prefix: new HarmonyMethod(GetPrefix(nameof(CompletedTask_Prefix))));
+            else if (method.ReturnType == typeof(void))
+                harmony.Patch(method, prefix: new HarmonyMethod(GetPrefix(nameof(NoOp_Prefix))));
+        }
+
+        // new NodePath("...") marshals the string through native interop —
+        // a hard 0xC0000005 process kill, NOT a catchable exception. It runs
+        // during ARGUMENT evaluation, so even `nullThing.GetNode("path")`
+        // (which would throw a tame NRE) dies natively first. Skip the native
+        // init; the resulting NodePath is hollow, but every headless code path
+        // that builds one is about to NRE on a null UI node anyway — and an
+        // NRE we can catch and report beats a dead process.
+        harmony.Patch(
+            AccessTools.Constructor(typeof(Godot.NodePath), new[] { typeof(string) }),
+            prefix: new HarmonyMethod(GetPrefix(nameof(NoOp_Prefix))));
     }
 
     /// <summary>
@@ -114,6 +207,76 @@ internal static class GodotShims
     {
         __result = false;
         return false; // false = skip original
+    }
+
+    private static bool NoOp_Prefix() => false;
+
+    private static bool CompletedTask_Prefix(ref Task __result)
+    {
+        __result = Task.CompletedTask;
+        return false;
+    }
+
+    private static MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground? _crabBgStub;
+
+    private static bool KaiserCrabBackground_Prefix(ref MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground __result)
+    {
+        _crabBgStub ??= (MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground)
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+                typeof(MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground));
+        __result = _crabBgStub;
+        return false;
+    }
+
+    private static bool FromChooseACardScreen_Prefix(
+        System.Collections.Generic.IReadOnlyList<CardModel> cards,
+        ref Task<CardModel?> __result)
+    {
+        var pick = cards.Count > 0 ? cards[0] : null;
+        if (pick != null) PlayCapture.RecordEffectSubject(pick);
+        __result = Task.FromResult<CardModel?>(pick);
+        return false;
+    }
+
+    private static bool NGame_CurrentRunNode_Prefix(ref MegaCrit.Sts2.Core.Nodes.NRun? __result)
+    {
+        __result = null;
+        return false;
+    }
+
+    private static bool GetViewportRect_Prefix(ref Godot.Rect2 __result)
+    {
+        __result = new Godot.Rect2(0, 0, 1920, 1080);
+        return false;
+    }
+
+    private static MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom? _combatRoomStub;
+
+    private static bool NCombatRoom_Instance_Prefix(ref MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom? __result)
+    {
+        _combatRoomStub ??= (MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom)
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
+                typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom));
+        __result = _combatRoomStub;
+        return false;
+    }
+
+    private static bool NCombatRoom_GetCreatureNode_Prefix(ref MegaCrit.Sts2.Core.Nodes.Combat.NCreature? __result)
+    {
+        __result = null;
+        return false;
+    }
+
+    private static bool NCombatRoom_Background_Prefix(ref MegaCrit.Sts2.Core.Nodes.Rooms.NCombatBackground? __result)
+    {
+        __result = null;
+        return false;
+    }
+
+    private static bool NCombatRoom_VfxContainer_Prefix(ref Godot.Control? __result)
+    {
+        __result = null;
+        return false;
     }
 
     private static bool ConsoleLogPrinter_Print_Prefix(LogLevel logLevel, string text)

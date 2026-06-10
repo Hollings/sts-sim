@@ -20,7 +20,7 @@ namespace StS2Sim;
 /// </summary>
 internal static class PlayCapture
 {
-    public enum EventKind { Draw, Play }
+    public enum EventKind { Draw, Play, EnemyMove }
 
     public sealed class Event
     {
@@ -75,5 +75,14 @@ internal static class PlayCapture
     {
         if (_sink == null || _lastEvent == null) return;
         _lastEvent.SubjectLabel = CardLabels.Format(card);
+    }
+
+    /// <summary>Encounter mode: an enemy performed a move ("Vantom · Ink Blot — 7 dmg").</summary>
+    public static void RecordEnemyMove(string label, string? subject = null)
+    {
+        if (_sink == null) return;
+        var ev = new Event(EventKind.EnemyMove, label, auto: false) { SubjectLabel = subject };
+        _lastEvent = ev;
+        _sink.Add(ev);
     }
 }

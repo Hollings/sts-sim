@@ -41,6 +41,7 @@ internal static class SmokeTests
             Test_Offering_GivesEnergyAndDraw,
             Test_Hellraiser_AutoplaysDrawnStrikes,
             Test_AscendersBane_NotPlayedByPolicies,
+            Test_EncounterMode_VantomFightsBack,
         };
 
         var results = new List<TestResult>();
@@ -53,7 +54,10 @@ internal static class SmokeTests
             catch (Exception ex)
             {
                 var name = test.Method.Name.Replace("Test_", "");
-                results.Add(new TestResult(name, false, $"threw: {ex.GetType().Name}: {ex.Message}"));
+                // First few stack frames so a crash is diagnosable from the output.
+                var frames = (ex.StackTrace ?? "").Split('\n').Take(4).Select(f => f.Trim());
+                results.Add(new TestResult(name, false,
+                    $"threw: {ex.GetType().Name}: {ex.Message}\n      {string.Join("\n      ", frames)}"));
             }
         }
 
@@ -336,6 +340,44 @@ internal static class SmokeTests
                     return "exhaust pile does not contain a Feed";
                 return null;
             });
+
+    private static async Task<TestResult> Test_EncounterMode_VantomFightsBack()
+    {
+        const string name = "Encounter mode: Vantom acts, both sides take damage";
+        // Real boss fight, 3 turns, starter-ish deck. Expectations: the boss's
+        // move state machine runs (player takes hits — Ink Blot is 7 on turn 1),
+        // the player deals damage back (Slippery caps hits at 1, but they land),
+        // and 3 turns is nowhere near enough to win.
+        var encounterId = EncounterCatalog.GetEncounters()
+            .FirstOrDefault(e => e.Id.Contains("VANTOM"))?.Id;
+        if (encounterId == null)
+            return new TestResult(name, false, "Vantom encounter not found in catalog");
+
+        var sim = new EncounterSim
+        {
+            Deck = Harness.AsEntries(new List<Type>
+            {
+                typeof(StrikeIronclad), typeof(StrikeIronclad), typeof(StrikeIronclad),
+                typeof(StrikeIronclad), typeof(StrikeIronclad),
+                typeof(DefendIronclad), typeof(DefendIronclad),
+                typeof(DefendIronclad), typeof(DefendIronclad),
+                typeof(Bash),
+            }),
+            EncounterId = encounterId,
+            MaxTurns = 3,
+            Policy = new EpsilonGreedyPolicy(new HighestDamagePolicy(), 0.3),
+        };
+        var r = await sim.RunSingleTrial(123);
+
+        if (r.Win) return new TestResult(name, false, "starter deck should not kill Vantom in 3 turns");
+        if (r.PlayerHpRemaining >= r.PlayerMaxHp)
+            return new TestResult(name, false, $"expected the boss to deal damage; player still at {r.PlayerHpRemaining}/{r.PlayerMaxHp}");
+        if (r.Turns.Count == 0 || !r.Turns.Any(t => t.Damage > 0))
+            return new TestResult(name, false, "expected the player to deal at least some damage");
+        if (!r.Turns.SelectMany(t => t.Events).Any(e => e.Kind == PlayCapture.EventKind.EnemyMove))
+            return new TestResult(name, false, "expected enemy move events in the timeline");
+        return new TestResult(name, true, null);
+    }
 
     // ─── helpers ────────────────────────────────────────────────────────────
 

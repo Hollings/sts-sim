@@ -58,6 +58,11 @@
   ul.cards li.cand { color: var(--accent-2); cursor: pointer; }
   ul.cards li.cand .cand-vs { color: var(--fg-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 
+  /* ─── Opponent picker ───────────────────────────────────── */
+  .opponent-select { width: 100%; background: var(--bg-2); color: var(--fg); border: 1px solid var(--border); padding: 6px 8px; border-radius: 3px; font: inherit; }
+  .opponent-select optgroup { color: var(--accent-2); font-style: normal; }
+  .opponent-select option { color: var(--fg); }
+
   /* ─── Sim config form ───────────────────────────────────── */
   .config { background: var(--bg-2); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
   .config .field { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
@@ -137,6 +142,8 @@
   .ev.play.manual .icon { color: var(--accent-2); }
   .ev.play.auto { color: var(--fg); background: rgba(212,161,66,0.18); }
   .ev.play.auto .icon { color: var(--accent-2); }
+  .ev.enemy { color: var(--bad); background: rgba(199,84,80,0.12); }
+  .ev.enemy .icon { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -176,12 +183,17 @@
     <h2>Relics</h2>
     <ul class="cards" id="relics"></ul>
 
+    <h2>Opponent</h2>
+    <select id="cfg-encounter" class="opponent-select" title="Training Dummy measures damage ceiling. Pick a real encounter to simulate the whole fight — enemy turns, block, deaths — and rank the deck by outcome.">
+      <option value="">Training Dummy (damage / N turns)</option>
+    </select>
+
     <h2>Sim Config</h2>
     <div class="config">
       <div class="field"><label>Seeds (shuffles tried)</label><input id="cfg-seeds" type="number" value="200" min="10" max="5000"></div>
       <div class="field"><label>K (plays per seed)</label><input id="cfg-k" type="number" value="30" min="1" max="500"></div>
       <div class="field"><label>Patience (0 = fixed K)</label><input id="cfg-patience" type="number" value="12" min="0" max="500" title="Stop a seed early after this many samples without improvement. 0 always runs all K."></div>
-      <div class="field"><label>Turns / combat</label><input id="cfg-turns" type="number" value="5" min="1" max="20"></div>
+      <div class="field"><label id="cfg-turns-label">Turns / combat</label><input id="cfg-turns" type="number" value="5" min="1" max="50"></div>
       <div class="field"><label>ε (exploration)</label><input id="cfg-eps" type="number" value="0.30" step="0.05" min="0" max="1"></div>
     </div>
     <div class="button-row">

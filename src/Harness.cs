@@ -64,7 +64,12 @@ internal static class Harness
     public sealed class CombatHarness
     {
         public required Player Player { get; init; }
+        /// <summary>First enemy. In dummy mode this is the 9999-HP BigDummy.</summary>
         public required Creature Dummy { get; init; }
+        /// <summary>All enemy creatures (1 in dummy mode, 1+ in encounter mode).</summary>
+        public required IReadOnlyList<Creature> Enemies { get; init; }
+        /// <summary>Set in encounter mode; null when fighting the dummy.</summary>
+        public EncounterModel? Encounter { get; init; }
         public required CombatState State { get; init; }
         public required PlayerChoiceContext Ctx { get; init; }
     }
@@ -90,10 +95,10 @@ internal static class Harness
         => ModelDb.AllCharacters.FirstOrDefault(c => c.Id.ToString() == characterId)?.GetType();
 
     /// <summary>Runtime-type overload for callers that receive character type dynamically.</summary>
-    public static CombatHarness BeginCombat(Type characterType, IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null)
+    public static CombatHarness BeginCombat(Type characterType, IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null)
         => (CombatHarness)BeginCombatGeneric
             .MakeGenericMethod(characterType)
-            .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds })!;
+            .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds, encounterId })!;
 
     // Resolve the DeckEntry-taking generic overload of BeginCombat<T>. There are
     // two generic overloads (one takes IEnumerable<Type>, one IEnumerable<DeckEntry>);
@@ -109,7 +114,7 @@ internal static class Harness
                 && pt.GetGenericArguments()[0] == typeof(DeckEntry);
         });
 
-    public static CombatHarness BeginCombat<TCharacter>(IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null)
+    public static CombatHarness BeginCombat<TCharacter>(IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null)
         where TCharacter : CharacterModel
     {
         var character = ModelDb.Character<TCharacter>();
@@ -126,7 +131,22 @@ internal static class Harness
             ReplaceRelics(player, relicIds);
         }
 
-        var combat = new CombatState(encounter: null, runState: NullRunState.Instance);
+        // Encounter mode: generate the real monster lineup for the chosen
+        // encounter. The mutable encounter instance is per-trial state (its
+        // monsters are mutable clones), so this is cheap to redo each trial.
+        EncounterModel? encounter = null;
+        if (encounterId != null)
+        {
+            var canonical = ModelDb.GetByIdOrNull<EncounterModel>(ModelId.Deserialize(encounterId))
+                ?? throw new ArgumentException($"Unknown encounter id '{encounterId}'");
+            encounter = canonical.ToMutable();
+            // Some encounters randomize their composition; seed that roll from
+            // the trial seed instead of NullRunState's constant stream.
+            Reflect.SeedEncounterRng(encounter, shuffleSeed ^ 0x5EEDBEEFu);
+            encounter.GenerateMonstersWithSlots(NullRunState.Instance);
+        }
+
+        var combat = new CombatState(encounter, runState: NullRunState.Instance);
         player.ResetCombatState();
         combat.AddPlayer(player);
         player.PopulateCombatState(new Rng(shuffleSeed), combat);
@@ -134,14 +154,36 @@ internal static class Harness
         Reflect.AttachCombatState(combat);
         Reflect.SetCombatInProgress(true);
 
-        var dummyMonster = (MonsterModel)ModelDb.Monster<BigDummy>().ToMutable();
-        var dummy = combat.CreateCreature(dummyMonster, CombatSide.Enemy, "slot1");
-        combat.AddCreature(dummy);
+        var enemies = new List<Creature>();
+        if (encounter != null)
+        {
+            uint monsterSeed = shuffleSeed;
+            foreach (var (monster, slot) in encounter.MonstersWithSlots)
+            {
+                var creature = combat.CreateCreature(monster, CombatSide.Enemy, slot);
+                combat.AddCreature(creature);
+                // CombatManager.AddCreature does this in the real game: builds
+                // the move state machine. Without it NextMove stays UNSET and
+                // TakeTurn throws.
+                monster.SetUpForCombat();
+                Reflect.ReseedMonsterRng(monster, monsterSeed++);
+                enemies.Add(creature);
+            }
+        }
+        else
+        {
+            var dummyMonster = (MonsterModel)ModelDb.Monster<BigDummy>().ToMutable();
+            var dummy = combat.CreateCreature(dummyMonster, CombatSide.Enemy, "slot1");
+            combat.AddCreature(dummy);
+            enemies.Add(dummy);
+        }
 
         return new CombatHarness
         {
             Player = player,
-            Dummy = dummy,
+            Dummy = enemies[0],
+            Enemies = enemies,
+            Encounter = encounter,
             State = combat,
             Ctx = new BlockingPlayerChoiceContext(),
         };
@@ -151,6 +193,9 @@ internal static class Harness
     {
         Reflect.SetCombatInProgress(false);
         Reflect.AttachCombatState(null);
+        // A trial where the player died set CombatManager._pendingLoss, which
+        // would gate all damage in every later trial. See Reflect.ClearPendingLoss.
+        Reflect.ClearPendingLoss();
 
         // CombatHistory is on the singleton CombatManager and accumulates across
         // every trial we run; without clearing it grows unbounded over a long

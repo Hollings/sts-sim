@@ -13,14 +13,16 @@ Default mode starts the embedded web UI on `http://localhost:52324` and opens th
 
 - run a best-of-K damage sim with live charts (per-seed scatter, running average ± CI, histogram),
 - click cards to mark removals and pick cards to add, then run an **A/B comparison** — baseline vs edited deck on identical shuffle seeds with a paired z-test verdict ("ADD IT / DON'T / INCONCLUSIVE"),
-- or answer the card-reward question directly: add 2–4 **compare candidates** and get a ranked table — each candidate tested as +1 card on identical shuffles, paired lift vs skipping, plus a winner-vs-runner-up significance test ("TAKE BLUDGEON — beats your current deck and clearly beats the other options").
+- answer the card-reward question directly: add 2–4 **compare candidates** and get a ranked table — each candidate tested as +1 card on identical shuffles, paired lift vs skipping, plus a winner-vs-runner-up significance test ("TAKE BLUDGEON — beats your current deck and clearly beats the other options"),
+- or pick a **real opponent**: any boss, elite, or normal encounter in the game. The sim then runs the whole fight — genuine monster AI through `MonsterMoveStateMachine`, real damage to the player, block, minion spawns — and ranks the deck by outcome (win rate + HP kept on win / boss HP left on loss). A/B and compare both work against an opponent, so "which of these three cards best helps me beat Vantom?" is one click.
 
 Other modes:
 
 ```bash
-dotnet run -c Release -- smoke         # 14 fast Ironclad assertion tests
-dotnet run -c Release -- silent-tests  # 174-test Silent card battery (exit 2 on harness crashes)
-dotnet run -c Release -- experiment    # legacy console K-curve + unpaired A/B
+dotnet run -c Release -- smoke            # 15 fast Ironclad assertion tests
+dotnet run -c Release -- silent-tests     # 174-test Silent card battery (exit 2 on harness crashes)
+dotnet run -c Release -- encounter-sweep  # one short fight vs all 60 encounters (exit 2 on crashes)
+dotnet run -c Release -- experiment       # legacy console K-curve + unpaired A/B
 ```
 
 ## How it works (short version)
@@ -35,4 +37,4 @@ See [CLAUDE.md](CLAUDE.md) for the full bootstrap walkthrough, project layout, t
 
 - Phase 1 (card piles, draw, energy, block, exhaust, multi-hit) — done, smoke-tested.
 - Phase 2 (powers, relics, hooks, turn-cycle events) — done, verified by the Silent battery (166/174 pass, 8 skips for unimplemented mechanics like multi-target).
-- Phase 3 (real enemy turns / survivability) — not started; the sim measures damage ceiling, not survival.
+- Phase 3 (real enemy turns / survivability) — done; all 60 encounters run crash-free (`encounter-sweep`). Caveat: the play policy doesn't read enemy intents yet, so it only blocks when ε-exploration stumbles into it — win rates are a fair *comparator* between decks but a *lower bound* on absolute winnability.

@@ -103,6 +103,10 @@ internal sealed class SimServer
                 case "/api/cards":
                     await ServeCards(ctx);
                     break;
+                case "/api/encounters":
+                    await SendJson(ctx, 200, new { encounters = EncounterCatalog.GetEncounters()
+                        .Select(e => new { id = e.Id, name = e.Name, roomType = e.RoomType, act = e.Act }) });
+                    break;
                 case "/api/sim/start":
                     await ServeSimStart(ctx);
                     break;
@@ -281,6 +285,7 @@ internal sealed class SimServer
                 VariantDeck = variantEntries,
                 Candidates = candidates,
                 ChangeSummary = changeSummary,
+                EncounterId = string.IsNullOrEmpty(req.EncounterId) ? null : req.EncounterId,
                 Relics = deck.Relics.Where(r => !string.IsNullOrEmpty(r)).ToList(),
                 CharacterId = deck.CharacterId,
                 BroadcastEvent = BroadcastEvent,
@@ -453,6 +458,8 @@ internal sealed class SimServer
         public List<CardChange>? Additions { get; set; }
         /// <summary>Compare mode: each entry is tested as baseline + that one card.</summary>
         public List<CardChange>? Candidates { get; set; }
+        /// <summary>Empty/null = dummy damage mode. Otherwise fight this encounter.</summary>
+        public string? EncounterId { get; set; }
     }
 
     private sealed class CardChange

@@ -26,9 +26,10 @@ shows your deck, and lets you run sim batches with live-streaming charts.
 
 Console-only modes (no UI):
 ```bash
-dotnet run -c Release -- experiment    # legacy headline A/B + K-vs-accuracy console output
-dotnet run -c Release -- smoke         # just the 14 Ironclad assertion tests, fast
-dotnet run -c Release -- silent-tests  # the 174-test Silent card battery; exit 2 on crashes
+dotnet run -c Release -- experiment       # legacy headline A/B + K-vs-accuracy console output
+dotnet run -c Release -- smoke            # the 15 Ironclad assertion tests, fast
+dotnet run -c Release -- silent-tests     # the 174-test Silent card battery; exit 2 on crashes
+dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; exit 2 on crashes
 ```
 
 The exe is fully standalone — no mod required, no Python, no game running.
@@ -161,17 +162,45 @@ Powers apply via `PowerCmd.Apply`, modify damage via `Hook.ModifyDamage`, tick d
 `AfterTurnEnd`. Verified: Bash applies Vulnerable, next Strike does 9 (6×1.5); Inflame
 applies +2 Strength, next Strike does 8 (6+2).
 
-**Phase 3 ideas (not started):**
-- Real enemy turns (currently BigDummy is a no-op). Needs `MonsterMoveStateMachine` wiring,
-  attack intents, etc.
-- Block valuation in the "deck quality" metric (a deck that survives is worth more than
-  a damage-equal one that dies).
-- Energy gain/loss outside of `Bloodletting` style (Adrenaline, etc.) — should already
-  work but untested.
-- Multi-target attacks (currently only BigDummy-as-single-enemy is verified).
-- End-of-combat triggers (Burning Blood heal, Feed +max HP).
+**Phase 3: real enemy turns — DONE (June 2026).** Pick any encounter (boss/elite/normal)
+as the opponent and the sim runs the whole fight: monsters' `MonsterMoveStateMachine`
+rolls and performs real moves through the game pipeline, the player takes damage,
+block matters, minions spawn, and the trial ends on death or the turn cap.
+Score = +player HP on win / −living primary-enemy HP on loss. `encounter-sweep`
+verifies all 60 encounters run crash-free (~2s). Key pieces:
+- `EncounterSim.cs` — the fight loop (player half-turn from DamagePerTurnSim's shared
+  play phase + `TurnHooks.EnemyTurn`, which mirrors CombatManager's SwitchSides →
+  enemy StartTurn → TakeTurn-per-enemy → EndEnemyTurnInternal flow).
+- `Harness.BeginCombat(..., encounterId)` — generates the encounter's monster lineup
+  (`EncounterModel.GenerateMonstersWithSlots`), calls `SetUpForCombat` per monster
+  (move state machine), reseeds each monster's RunRngSet per trial (NullRunState.Rng
+  mints an identical stream on every access — boss AI would be the same script every
+  seed otherwise), and fires `AfterAddedToRoom` (Vantom's Slippery etc).
+- `EncounterCatalog.cs` — act-grouped encounter list for `GET /api/encounters`.
+
+**Phase 3 leftovers (not started):**
+- Intent-aware play policy (block when the boss telegraphs a big hit). Currently
+  ε-greedy finds block lines only by exploration, so survival is under-estimated.
+- End-of-combat triggers (Burning Blood heal, Feed +max HP) — irrelevant to single
+  fights, matters if we ever chain fights.
 
 ## Known limits / footguns
+
+- **`CombatManager._pendingLoss` is sticky.** When the player dies the game calls
+  `LoseCombat()`, and `AttackCommand` gates ALL damage on `IsOverOrEnding` — one
+  lethal trial silently zeroes every later trial in the process. `Harness.EndCombat`
+  clears it via reflection. If trials ever go "inert" (0 damage both ways), check
+  this first.
+- **UI singletons are stubbed, not absent.** `NGame.Instance` and
+  `NCombatRoom.Instance` serve constructor-skipped instances with their
+  screen-effect/visual members no-op'd (see GodotShims) because monster code
+  dereferences them without null checks. `new NodePath(string)` is patched to skip
+  native init — it hard-kills the process (0xC0000005) during argument evaluation
+  otherwise. A new monster touching an unstubbed member shows up as a CRASH in
+  `encounter-sweep`; add a shim there.
+- **Boss survival is a lower bound.** The play policy doesn't read intents, so it
+  blocks only when ε-exploration happens to. Win rates discriminate decks fairly
+  (same policy both sides) but understate absolute winnability.
 
 - **`CombatManager.Instance` is a singleton.** Cannot run two combats in parallel within
   one process without solving this. Subprocess or `AssemblyLoadContext` parallelism if
@@ -223,11 +252,13 @@ applies +2 Strength, next Strike does 8 (6+2).
 ~~Card-swap A/B UI~~ — DONE (deck editor + paired-z verdict, June 2026).
 ~~Adaptive K~~ — DONE (Patience knob, June 2026).
 ~~Multi-candidate compare~~ — DONE ("which of these reward cards?" ranking, June 2026).
+~~Phase 3 / boss fights~~ — DONE (encounter mode, win-rate + outcome score, June 2026).
 
-1. **Smarter base policy**: hand-coded heuristics like "play Powers turn 1",
-   "apply Vulnerable before attacking". Could shrink ε-needed and tighten CI.
-2. **Subprocess parallelism**: ~6x throughput. Don't bother until #1 feels slow.
-3. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
+1. **Intent-aware policy**: read `monster.NextMove.Intents` and value block when a
+   big attack is telegraphed. Single biggest accuracy lever for boss win rates.
+2. **Smarter base policy generally**: "play Powers turn 1", "Vulnerable before
+   attacking". Could shrink ε-needed and tighten CI.
+3. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-2 feel slow.
 
 ## UI notes (frontend)
 
