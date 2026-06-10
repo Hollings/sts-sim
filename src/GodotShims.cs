@@ -117,6 +117,8 @@ internal static class GodotShims
             AccessTools.Method(ncombatRoom, "GetCreatureNode"),
             prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_GetCreatureNode_Prefix))));
         PatchPrefix(harmony, ncombatRoom, "RadialBlur", nameof(NoOp_Prefix));
+        // Necrobinder's Unleash shakes the Osty pet's visual node on the room.
+        PatchPrefix(harmony, ncombatRoom, "ShakeOstyIfDead", nameof(NoOp_Prefix));
         harmony.Patch(
             AccessTools.PropertyGetter(ncombatRoom, "Background"),
             prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_Background_Prefix))));

@@ -37,8 +37,14 @@ Other modes:
 dotnet run -c Release -- smoke            # 15 fast Ironclad assertion tests
 dotnet run -c Release -- silent-tests     # 174-test Silent card battery (exit 2 on harness crashes)
 dotnet run -c Release -- encounter-sweep  # one short fight vs all 60 encounters (exit 2 on crashes)
+dotnet run -c Release -- character-sweep  # starter-deck trial per character (exit 2 on crashes)
+dotnet run -c Release -- policy-bench     # play-policy uplift benchmark
 dotnet run -c Release -- experiment       # legacy console K-curve + unpaired A/B
 ```
+
+All five characters work (Ironclad, Silent, Regent, Necrobinder, Defect) — the
+sim reads whoever your current run is playing. Card-level assertion coverage is
+deepest for Ironclad and Silent; the others run the same real game code.
 
 ## How it works (short version)
 

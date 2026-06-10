@@ -96,9 +96,21 @@ internal static class Harness
 
     /// <summary>Runtime-type overload for callers that receive character type dynamically.</summary>
     public static CombatHarness BeginCombat(Type characterType, IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null)
-        => (CombatHarness)BeginCombatGeneric
-            .MakeGenericMethod(characterType)
-            .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds, encounterId })!;
+    {
+        try
+        {
+            return (CombatHarness)BeginCombatGeneric
+                .MakeGenericMethod(characterType)
+                .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds, encounterId })!;
+        }
+        catch (TargetInvocationException tie) when (tie.InnerException != null)
+        {
+            // Re-throw the real failure with its original stack — the reflection
+            // wrapper makes every harness bug look identical.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+            throw; // unreachable
+        }
+    }
 
     // Resolve the DeckEntry-taking generic overload of BeginCombat<T>. There are
     // two generic overloads (one takes IEnumerable<Type>, one IEnumerable<DeckEntry>);
@@ -124,6 +136,16 @@ internal static class Harness
         if (deckOverride != null)
         {
             ReplaceDeck(player, deckOverride);
+        }
+        else
+        {
+            // Starter-deck mode: PopulateStartingInventory leaves card.Owner
+            // null (the real game assigns owners when the player joins a run,
+            // which we never do). CombatState.Contains dereferences Owner on
+            // every hook iteration, so claim the cards here — exactly what
+            // ReplaceDeck does for override decks.
+            foreach (var card in player.Deck.Cards)
+                card.Owner = player;
         }
 
         if (relicIds != null)

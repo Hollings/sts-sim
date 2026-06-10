@@ -30,7 +30,14 @@ dotnet run -c Release -- experiment       # legacy headline A/B + K-vs-accuracy 
 dotnet run -c Release -- smoke            # the 15 Ironclad assertion tests, fast
 dotnet run -c Release -- silent-tests     # the 174-test Silent card battery; exit 2 on crashes
 dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; exit 2 on crashes
+dotnet run -c Release -- character-sweep  # starter-deck trial per character (dummy + fight); exit 2 on crashes
+dotnet run -c Release -- policy-bench     # play-policy uplift benchmark on a pinned suite
 ```
+
+All five characters (Ironclad, Silent, Regent, Necrobinder, Defect) run in
+both modes — verified by `character-sweep`. Per-card assertion coverage is
+deepest for Ironclad (smoke) and Silent (174-test battery); other characters'
+cards run through the same real game code but without per-card assertions.
 
 The exe is fully standalone — no mod required, no Python, no game running.
 Just needs a `current_run.save` somewhere under `%APPDATA%\SlayTheSpire2\`.

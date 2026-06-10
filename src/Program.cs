@@ -155,6 +155,14 @@ internal static class Program
                 return await PolicyBench.RunAll();
             }
 
+            // "character-sweep" runs one starter-deck trial per character
+            // (dummy + real fight). Exit 2 if any character crashes.
+            if (args.Length > 0 && args[0] == "character-sweep")
+            {
+                Harness.Bootstrap();
+                return await CharacterSweep.RunAll();
+            }
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

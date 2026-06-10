@@ -17,7 +17,8 @@ namespace StS2Sim;
 internal sealed class DamagePerTurnSim
 {
     public required string DeckName { get; init; }
-    public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
+    /// <summary>Null = the character's real starter deck.</summary>
+    public IReadOnlyList<Harness.DeckEntry>? Deck { get; init; }
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public Type CharacterType { get; init; } = typeof(Ironclad);
     public int HandSize { get; init; } = 5;

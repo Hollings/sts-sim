@@ -23,7 +23,8 @@ namespace StS2Sim;
 /// </summary>
 internal sealed class EncounterSim
 {
-    public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
+    /// <summary>Null = the character's real starter deck.</summary>
+    public IReadOnlyList<Harness.DeckEntry>? Deck { get; init; }
     public required string EncounterId { get; init; }
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public Type CharacterType { get; init; } = typeof(Ironclad);
