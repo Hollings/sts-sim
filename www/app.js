@@ -329,6 +329,24 @@ function renderDeckEditor() {
   $('run-btn').textContent = candidates.length > 0
     ? `Compare ${candidates.length} Card${candidates.length > 1 ? 's' : ''}`
     : hasChanges() ? 'Run A/B Sim' : 'Run Sim';
+
+  updateRunSummary();
+}
+
+// Plain-English description of what the Run button will do, always visible
+// above it — the question is assembled from three places (opponent, edits,
+// candidates), so restate it in one.
+function updateRunSummary() {
+  const sel = $('cfg-encounter');
+  const opp = sel.value && sel.selectedOptions.length
+    ? sel.selectedOptions[0].textContent : 'Training Dummy';
+  const q = candidates.length > 0
+    ? `Compare ${candidates.length} card${candidates.length > 1 ? 's' : ''} (+skip)`
+    : hasChanges() ? 'A/B: current deck vs edited'
+    : sel.value ? 'Fight sim: current deck' : 'Damage sim: current deck';
+  const edits = describeChanges();
+  $('run-summary').innerHTML =
+    `<b>${escapeHtml(q)}</b> vs ${escapeHtml(opp)}${edits ? ` · ${escapeHtml(edits)}` : ''}`;
 }
 
 $('deck-cards').addEventListener('click', ev => {
@@ -426,7 +444,11 @@ async function loadEncounters() {
       }
       sel.appendChild(og);
     }
-    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+    if (saved && [...sel.options].some(o => o.value === saved)) {
+      sel.value = saved;
+      $('cfg-turns-label').textContent = 'Max turns (cap = loss)';
+    }
+    updateRunSummary();
   } catch { /* dropdown just stays dummy-only */ }
 }
 
@@ -440,7 +462,44 @@ $('cfg-encounter').addEventListener('change', () => {
   if (fight && turns <= 10) $('cfg-turns').value = 30;
   if (!fight && turns >= 20) $('cfg-turns').value = 5;
   localStorage.setItem('sts2sim.cfg-turns', $('cfg-turns').value);
+  updateRunSummary();
 });
+
+// ─── Effort presets ──────────────────────────────────────────────────────
+// One knob for the common case; the individual fields stay editable under
+// the fold and flip the preset to "custom" when they diverge.
+
+const PRESETS = {
+  quick:    { 'cfg-seeds': 60,  'cfg-k': 12, 'cfg-patience': 6 },
+  standard: { 'cfg-seeds': 200, 'cfg-k': 30, 'cfg-patience': 12 },
+  thorough: { 'cfg-seeds': 500, 'cfg-k': 50, 'cfg-patience': 20 },
+};
+
+function detectPreset() {
+  for (const [name, vals] of Object.entries(PRESETS)) {
+    if (Object.entries(vals).every(([id, v]) => +$(id).value === v)) return name;
+  }
+  return 'custom';
+}
+
+function syncPresetUi() {
+  const name = detectPreset();
+  $('cfg-preset').value = name;
+  $('cfg-fold-info').textContent = name;
+}
+
+$('cfg-preset').addEventListener('change', () => {
+  const vals = PRESETS[$('cfg-preset').value];
+  if (vals) {
+    for (const [id, v] of Object.entries(vals)) {
+      $(id).value = v;
+      localStorage.setItem(`sts2sim.${id}`, v);
+    }
+  }
+  syncPresetUi();
+});
+for (const id of ['cfg-seeds', 'cfg-k', 'cfg-patience'])
+  $(id).addEventListener('change', syncPresetUi);
 
 async function loadCardCatalog() {
   try {
@@ -472,7 +531,8 @@ async function loadDeck() {
       <div class="row"><span>HP</span><span>${d.currentHp} / ${d.maxHp}</span></div>
       <div class="row"><span>Gold</span><span>${d.gold}</span></div>
       <div class="row"><span>Save</span><span>${escapeHtml(d.modified)}</span></div>`;
-    $('deck-info').innerHTML = `<div class="row"><span>Total cards</span><span><b>${d.deckSize}</b></span></div>`;
+    $('deck-info').textContent = `· ${d.deckSize} cards`;
+    $('run-fold-info').textContent = `${d.characterPretty} · ${d.currentHp}/${d.maxHp} HP`;
     $('relics').innerHTML = d.relics.length
       ? d.relics.map(r => `<li><span>${escapeHtml(r.name)}</span></li>`).join('')
       : '<li class="empty">none</li>';
@@ -788,6 +848,8 @@ $('refresh-btn').onclick = () => loadDeck();
 
 initCharts();
 restoreConfig();
+syncPresetUi();
+updateRunSummary();
 loadDeck();
 loadEncounters();
 connectWs();

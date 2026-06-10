@@ -274,6 +274,16 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
 
 ## UI notes (frontend)
 
+- The sidebar is a numbered question-builder (1 Opponent → 2 Deck edits →
+  3 Candidates) with read-only run info/relics and sim settings collapsed
+  into `<details>` folds. The run footer is pinned (aside is a flex column;
+  only `.sidebar-scroll` scrolls) and always shows a plain-English summary
+  of what Run will do — the question is assembled from three places, so it
+  gets restated in one.
+- Sim settings hide behind an Effort preset (Quick 60/12/6, Standard
+  200/30/12, Thorough 500/50/20 for seeds/K/patience). Editing the raw
+  fields flips the preset to "custom"; `detectPreset()` keeps the select in
+  sync with whatever the fields actually say.
 - WebSocket auto-reconnects on disconnect (1-second backoff).
 - Chart redraws are coalesced into a single requestAnimationFrame tick
   (`chartsDirty` flag) — at most one redraw per frame regardless of event rate.
