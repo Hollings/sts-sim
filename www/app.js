@@ -1,6 +1,7 @@
 // StS2 Sim — single-file frontend.
-// Loads the current run's deck from the embedded server, lets you kick off
-// a sim batch, and live-streams progress over WebSocket while drawing charts.
+// Loads the current run's deck from the embedded server, lets you mark card
+// removals/additions for an A/B test, kicks off sim batches, and live-streams
+// progress over WebSocket while drawing charts.
 
 // ─── Tiny utilities ──────────────────────────────────────────────────────
 
@@ -29,6 +30,9 @@ function damageColor(y, min, max) {
   return `rgb(${lerp(0xd4, 0x5f, u)},${lerp(0xa1, 0xb0, u)},${lerp(0x42, 0x4f, u)})`;
 }
 
+const BASE_COLOR = '#6da4c4';      // baseline series (muted blue)
+const VARIANT_COLOR = '#d4a142';   // variant series (gold)
+
 // ─── DOM helpers (UI state mutations are repeated everywhere) ────────────
 
 function setVerdict(cls, text) {
@@ -50,10 +54,12 @@ const renderStats = tiles => { $('stats').innerHTML = tiles.join(''); };
 // ─── Charts ──────────────────────────────────────────────────────────────
 
 let bestChart, avgChart, histChart;
-let bestSeries = [];           // [{x, y}] — per-seed best damage
-let avgSeries = [];            // [{x, y}] — running avg
-let ciUpper = [];
-let ciLower = [];
+let abMode = false;
+// Per-phase series. Single-run mode only fills `base`.
+const series = {
+  base:    { best: [], avg: [], ciUpper: [], ciLower: [] },
+  variant: { best: [], avg: [], ciUpper: [], ciLower: [] },
+};
 let runningMean = null;        // for the horizontal reference line
 
 function initCharts() {
@@ -86,15 +92,21 @@ function initCharts() {
 
   bestChart = new Chart($('chart-best'), {
     type: 'scatter',
-    data: { datasets: [{ data: [], pointBackgroundColor: [], pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7 }] },
+    data: { datasets: [
+      { label: 'baseline', data: [], pointBackgroundColor: [], pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7 },
+      { label: 'variant', data: [], pointBackgroundColor: VARIANT_COLOR, pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7, pointStyle: 'triangle' },
+    ]},
     options: {
       animation: false,
       maintainAspectRatio: false,
       scales: {
         x: { title: { display: true, text: 'seed index' }, ticks: { precision: 0 } },
-        y: { title: { display: true, text: 'best damage / 5 turns' }, beginAtZero: false, grace: '5%' },
+        y: { title: { display: true, text: 'best damage' }, beginAtZero: false, grace: '5%' },
       },
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `seed ${c.parsed.x}: ${c.parsed.y} dmg` } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label} seed ${c.parsed.x}: ${c.parsed.y} dmg` } },
+      },
     },
     plugins: [meanLinePlugin],
   });
@@ -106,7 +118,8 @@ function initCharts() {
     data: { datasets: [
       { label: 'CI upper', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(212,161,66,0.12)', pointRadius: 0, showLine: true },
       { label: 'CI lower', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: false, pointRadius: 0, showLine: true },
-      { label: 'Running avg', data: [], borderColor: '#d4a142', borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
+      { label: 'baseline', data: [], borderColor: BASE_COLOR, borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
+      { label: 'variant', data: [], borderColor: VARIANT_COLOR, borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
     ]},
     options: {
       animation: false,
@@ -121,7 +134,10 @@ function initCharts() {
 
   histChart = new Chart($('chart-hist'), {
     type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
+    data: { labels: [], datasets: [
+      { label: 'baseline', data: [], backgroundColor: [] },
+      { label: 'variant', data: [], backgroundColor: VARIANT_COLOR + 'cc' },
+    ]},
     options: {
       animation: false,
       maintainAspectRatio: false,
@@ -135,52 +151,60 @@ function initCharts() {
 }
 
 function updateCharts() {
-  const ys = bestSeries.map(p => p.y);
-  const [min, max] = ys.length ? minMax(ys) : [0, 0];
+  const baseYs = series.base.best.map(p => p.y);
+  const varYs = series.variant.best.map(p => p.y);
+  const allYs = baseYs.concat(varYs);
+  const [min, max] = allYs.length ? minMax(allYs) : [0, 0];
 
-  // Per-seed scatter: color each dot by its damage relative to the run's range.
-  if (bestSeries.length > 0) {
-    bestChart.data.datasets[0].data = bestSeries;
-    bestChart.data.datasets[0].pointBackgroundColor = bestSeries.map(p => damageColor(p.y, min, max));
-  }
+  // Per-seed scatter. Single mode: gradient-colored dots. A/B mode: solid
+  // per-phase colors so the two clouds are distinguishable.
+  bestChart.data.datasets[0].data = series.base.best;
+  bestChart.data.datasets[0].pointBackgroundColor = abMode
+    ? BASE_COLOR
+    : series.base.best.map(p => damageColor(p.y, min, max));
+  bestChart.data.datasets[1].data = series.variant.best;
   bestChart.update('none');
 
-  avgChart.data.datasets[0].data = ciUpper;
-  avgChart.data.datasets[1].data = ciLower;
-  avgChart.data.datasets[2].data = avgSeries;
+  avgChart.data.datasets[0].data = abMode ? [] : series.base.ciUpper;
+  avgChart.data.datasets[1].data = abMode ? [] : series.base.ciLower;
+  avgChart.data.datasets[2].data = series.base.avg;
+  avgChart.data.datasets[3].data = series.variant.avg;
   avgChart.update('none');
 
-  // Histogram with ~12 buckets, colored by damage gradient.
-  if (ys.length > 1 && max > min) {
+  // Histogram with ~12 shared buckets. A/B mode shows the two distributions
+  // side by side; single mode keeps the damage-gradient coloring.
+  if (allYs.length > 1 && max > min) {
     const buckets = 12;
     const w = (max - min) / buckets;
-    const counts = new Array(buckets).fill(0);
     const labels = [];
     const colors = [];
     for (let i = 0; i < buckets; i++) {
       labels.push(`${Math.round(min + i * w)}`);
       colors.push(damageColor(min + (i + 0.5) * w, min, max));
     }
-    for (const y of ys) {
-      const i = Math.min(buckets - 1, Math.floor((y - min) / w));
-      counts[i]++;
-    }
+    const countUp = ys => {
+      const counts = new Array(buckets).fill(0);
+      for (const y of ys) counts[Math.min(buckets - 1, Math.floor((y - min) / w))]++;
+      return counts;
+    };
     histChart.data.labels = labels;
-    histChart.data.datasets[0].data = counts;
-    histChart.data.datasets[0].backgroundColor = colors;
+    histChart.data.datasets[0].data = countUp(baseYs);
+    histChart.data.datasets[0].backgroundColor = abMode ? BASE_COLOR + 'cc' : colors;
+    histChart.data.datasets[1].data = abMode ? countUp(varYs) : [];
     histChart.update('none');
   }
 }
 
 function resetCharts() {
-  bestSeries = []; avgSeries = []; ciUpper = []; ciLower = [];
+  for (const phase of Object.values(series)) {
+    phase.best = []; phase.avg = []; phase.ciUpper = []; phase.ciLower = [];
+  }
   runningMean = null;
-  bestChart.data.datasets[0].data = [];
+  bestChart.data.datasets.forEach(ds => { ds.data = []; });
   bestChart.data.datasets[0].pointBackgroundColor = [];
-  avgChart.data.datasets.forEach(ds => ds.data = []);
+  avgChart.data.datasets.forEach(ds => { ds.data = []; });
   histChart.data.labels = [];
-  histChart.data.datasets[0].data = [];
-  histChart.data.datasets[0].backgroundColor = [];
+  histChart.data.datasets.forEach(ds => { ds.data = []; });
   bestChart.update('none'); avgChart.update('none'); histChart.update('none');
 }
 
@@ -196,6 +220,130 @@ function tick() {
 }
 requestAnimationFrame(tick);
 
+// ─── Deck editor state ───────────────────────────────────────────────────
+
+let deckData = null;          // last /api/deck payload
+let cardCatalog = [];         // /api/cards entries for the picker
+// Pending A/B changes. Keys are `${id}|${upgrade}`.
+const removals = new Map();   // key -> count to remove
+let additions = [];           // [{ id, upgrade, count, name }]
+
+const changeKey = (id, upgrade) => `${id}|${upgrade}`;
+
+function hasChanges() { return removals.size > 0 || additions.length > 0; }
+
+function clearChanges() {
+  removals.clear();
+  additions = [];
+  renderDeckEditor();
+}
+
+function changesPayload() {
+  return {
+    removals: [...removals.entries()].map(([key, count]) => {
+      const [id, upgrade] = key.split('|');
+      return { id, upgrade: +upgrade, count };
+    }),
+    additions: additions.map(a => ({ id: a.id, upgrade: a.upgrade, count: a.count })),
+  };
+}
+
+function describeChanges() {
+  const parts = [];
+  for (const [key, count] of removals) {
+    const [id, upgrade] = key.split('|');
+    const g = deckData?.cardsGrouped.find(c => c.id === id && c.upgrade === +upgrade);
+    parts.push(`−${g ? g.name : id}${count > 1 ? ` ×${count}` : ''}`);
+  }
+  for (const a of additions)
+    parts.push(`+${a.name}${a.count > 1 ? ` ×${a.count}` : ''}`);
+  return parts.join(' · ');
+}
+
+function renderDeckEditor() {
+  if (!deckData) return;
+
+  $('deck-cards').innerHTML = deckData.cardsGrouped.map((c, i) => {
+    const key = changeKey(c.id, c.upgrade);
+    const removing = removals.get(key) || 0;
+    const tag = removing > 0 ? `<span class="removed-tag">−${removing}</span>` : '';
+    return `<li class="editable ${removing > 0 ? 'removing' : ''}" data-idx="${i}">
+      <span>${escapeHtml(c.name)}${tag}</span><span class="count">×${c.count}</span></li>`;
+  }).join('')
+  + additions.map((a, i) =>
+      `<li class="editable added" data-add="${i}" title="Click to un-add">
+        <span>+ ${escapeHtml(a.name)}</span><span class="count">×${a.count}</span></li>`
+    ).join('');
+
+  const bar = $('changes-bar');
+  if (hasChanges()) {
+    bar.classList.remove('hidden');
+    $('changes-text').textContent = describeChanges();
+    $('run-btn').textContent = 'Run A/B Sim';
+  } else {
+    bar.classList.add('hidden');
+    $('run-btn').textContent = 'Run Sim';
+  }
+}
+
+$('deck-cards').addEventListener('click', ev => {
+  const li = ev.target.closest('li');
+  if (!li || $('run-btn').disabled) return;
+
+  if (li.dataset.add !== undefined) {
+    // Click a pending addition: decrement, drop at 0.
+    const i = +li.dataset.add;
+    if (--additions[i].count <= 0) additions.splice(i, 1);
+    renderDeckEditor();
+    return;
+  }
+  if (li.dataset.idx !== undefined) {
+    // Click a deck card: cycle removal count 0 → 1 → … → count → 0.
+    const c = deckData.cardsGrouped[+li.dataset.idx];
+    const key = changeKey(c.id, c.upgrade);
+    const next = (removals.get(key) || 0) + 1;
+    if (next > c.count) removals.delete(key);
+    else removals.set(key, next);
+    renderDeckEditor();
+  }
+});
+
+$('changes-clear').onclick = clearChanges;
+
+$('add-card-btn').onclick = () => {
+  const input = $('add-card-input');
+  const name = input.value.trim();
+  if (!name) return;
+  const entry = cardCatalog.find(c => c.name.toLowerCase() === name.toLowerCase())
+             || cardCatalog.find(c => c.name.toLowerCase().startsWith(name.toLowerCase()));
+  if (!entry) {
+    setVerdict('error', `Unknown card "${name}" — pick one from the list.`);
+    return;
+  }
+  const upgrade = $('add-card-upgraded').checked ? 1 : 0;
+  const display = entry.name + (upgrade ? '+' : '');
+  const existing = additions.find(a => a.id === entry.id && a.upgrade === upgrade);
+  if (existing) existing.count++;
+  else additions.push({ id: entry.id, upgrade, count: 1, name: display });
+  input.value = '';
+  renderDeckEditor();
+};
+$('add-card-input').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') $('add-card-btn').click();
+});
+
+async function loadCardCatalog() {
+  try {
+    const r = await fetch('/api/cards');
+    if (!r.ok) return;
+    const d = await r.json();
+    cardCatalog = d.cards;
+    $('card-options').innerHTML = cardCatalog
+      .map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(`${c.cost}⚡ ${c.cardType} · ${c.rarity}`)}</option>`)
+      .join('');
+  } catch { /* picker just stays empty */ }
+}
+
 // ─── Deck UI ─────────────────────────────────────────────────────────────
 
 async function loadDeck() {
@@ -207,17 +355,19 @@ async function loadDeck() {
       return;
     }
     const d = await r.json();
+    deckData = d;
+    clearChanges(); // deck changed on disk — stale edits make no sense
     $('run-info').innerHTML = `
       <div class="row"><span>Character</span><span>${escapeHtml(d.characterPretty)}</span></div>
       <div class="row"><span>HP</span><span>${d.currentHp} / ${d.maxHp}</span></div>
       <div class="row"><span>Gold</span><span>${d.gold}</span></div>
       <div class="row"><span>Save</span><span>${escapeHtml(d.modified)}</span></div>`;
     $('deck-info').innerHTML = `<div class="row"><span>Total cards</span><span><b>${d.deckSize}</b></span></div>`;
-    $('deck-cards').innerHTML = d.cardsGrouped
-      .map(c => `<li><span>${escapeHtml(c.name)}</span><span class="count">×${c.count}</span></li>`).join('');
     $('relics').innerHTML = d.relics.length
       ? d.relics.map(r => `<li><span>${escapeHtml(r.name)}</span></li>`).join('')
       : '<li class="empty">none</li>';
+    renderDeckEditor();
+    loadCardCatalog();
   } catch (e) {
     $('run-info').innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
   }
@@ -245,15 +395,23 @@ function connectWs() {
   };
 }
 
+let phaseDoneInfo = null; // baseline phaseDone payload, for status text
+
 // Event handlers, one per `e.type` — dispatched from handleEvent below.
 // Wire-shape contract: these `type` strings + field names match Server/SimJob.cs Broadcast calls.
 const eventHandlers = {
   started(e) {
+    abMode = !!e.abTest;
+    phaseDoneInfo = null;
     resetCharts();
+    $('ab-panel').className = 'ab-panel hidden';
     $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
     $('best-headline').textContent = '';
-    setVerdict('running', `Running: ${e.seeds} seeds × ${e.k} samples each, ${e.turns} turns, ε=${e.epsilon}`);
-    $('status').textContent = 'Started…';
+    const cfg = `${e.seeds} seeds × K=${e.k}${e.patience ? ` (patience ${e.patience})` : ''}, ${e.turns} turns, ε=${e.epsilon}`;
+    setVerdict('running', abMode
+      ? `A/B: ${e.changeSummary || 'deck edit'} — ${cfg}`
+      : `Running: ${cfg}`);
+    $('status').textContent = abMode ? 'Phase 1/2: baseline deck…' : 'Started…';
     $('prog').style.width = '0%';
     setRunning(true);
   },
@@ -262,26 +420,42 @@ const eventHandlers = {
   newBest(e) { bestPending = e; },
 
   seed(e) {
-    bestSeries.push({ x: e.index, y: e.bestForSeed });
-    avgSeries.push({ x: e.index, y: e.runningAvg });
-    ciUpper.push({ x: e.index, y: e.runningAvg + e.ci95 });
-    ciLower.push({ x: e.index, y: e.runningAvg - e.ci95 });
-    runningMean = e.runningAvg;
+    const phase = series[e.phase] || series.base;
+    phase.best.push({ x: e.index, y: e.bestForSeed });
+    phase.avg.push({ x: e.index, y: e.runningAvg });
+    phase.ciUpper.push({ x: e.index, y: e.runningAvg + e.ci95 });
+    phase.ciLower.push({ x: e.index, y: e.runningAvg - e.ci95 });
+    if (!abMode) runningMean = e.runningAvg;
 
-    const pct = ((e.index + 1) / e.total) * 100;
+    // Progress: in A/B mode each phase is half the bar.
+    const phaseFrac = (e.index + 1) / e.total;
+    const pct = abMode
+      ? (e.phase === 'variant' ? 50 + phaseFrac * 50 : phaseFrac * 50)
+      : phaseFrac * 100;
     $('prog').style.width = pct + '%';
     // Cheap text updates can stay per-event.
     const runsPerSec = (e.totalRuns / Math.max(1, e.elapsedMs / 1000)).toFixed(0);
-    $('status').textContent = `Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${runsPerSec} runs/s`;
+    const phaseTxt = abMode ? (e.phase === 'variant' ? 'Phase 2/2 (variant)' : 'Phase 1/2 (baseline)') + ' · ' : '';
+    $('status').textContent = `${phaseTxt}Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${runsPerSec} runs/s`;
     // Mark charts dirty; the rAF tick will redraw at most once per frame.
     chartsDirty = true;
     // Stat tiles get updated less often (once per ~10 seeds is fine).
     if (e.index % 10 === 0 || e.index + 1 === e.total) {
-      renderStats([
-        statTile('Running avg-of-best', `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
+      const tiles = [
+        statTile(`Running avg-of-best${abMode ? ` (${e.phase})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
         statTile('Last seed best', e.bestForSeed),
         statTile('Total runs', e.totalRuns),
-      ]);
+      ];
+      if (abMode && phaseDoneInfo)
+        tiles.unshift(statTile('Baseline avg-of-best', `${fmt(phaseDoneInfo.avgOfBest)} ± ${fmt(phaseDoneInfo.ci95)}`));
+      renderStats(tiles);
+    }
+  },
+
+  phaseDone(e) {
+    if (e.phase === 'base') {
+      phaseDoneInfo = e;
+      $('status').textContent = `Baseline done: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} · starting variant…`;
     }
   },
 
@@ -294,6 +468,34 @@ const eventHandlers = {
       statTile('Per turn', fmt(e.avgPerTurn)),
       statTile('Best / worst seed', `${e.bestOfBest} / ${e.worstSeedBest}`),
       statTile('Convergence (median K)', e.medianConvergenceK),
+    ]);
+    setRunning(false);
+  },
+
+  abDone(e) {
+    updateCharts();
+    const sign = e.lift >= 0 ? '+' : '';
+    setVerdict('done', `A/B done: lift ${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)} dmg`);
+    $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs total (paired over ${e.pairedSeeds} seeds)`;
+
+    const panel = $('ab-panel');
+    panel.className = `ab-panel ${e.verdictClass}`;
+    $('ab-verdict-line').textContent = e.verdict;
+    $('ab-detail').innerHTML = [
+      ['Change', e.changeSummary || '—'],
+      ['Baseline', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`],
+      ['Variant', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}`],
+      ['Lift', `${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)} (${sign}${fmt(e.liftPerTurn)}/turn)`],
+      ['z-score (paired)', fmt(e.z)],
+    ].map(([label, value]) =>
+      `<div><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(String(value))}</span></div>`
+    ).join('');
+
+    renderStats([
+      statTile('Baseline avg-of-best', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`),
+      statTile('Variant avg-of-best', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}`),
+      statTile('Lift', `${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)}`),
+      statTile('z (paired)', fmt(e.z)),
     ]);
     setRunning(false);
   },
@@ -340,8 +542,20 @@ function renderTurnCard(t) {
 
 function renderBestCombat(e) {
   const seedHex = e.seed.toString(16).toUpperCase();
-  $('best-headline').textContent = `${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${seedHex}`;
+  const phaseTxt = abMode ? `[${e.phase === 'variant' ? 'variant' : 'baseline'}] ` : '';
+  $('best-headline').textContent = `${phaseTxt}${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${seedHex}`;
   $('best-combat').innerHTML = e.turns.map(renderTurnCard).join('');
+}
+
+// ─── Config persistence ──────────────────────────────────────────────────
+
+const CFG_IDS = ['cfg-seeds', 'cfg-k', 'cfg-patience', 'cfg-turns', 'cfg-eps'];
+function restoreConfig() {
+  for (const id of CFG_IDS) {
+    const saved = localStorage.getItem(`sts2sim.${id}`);
+    if (saved !== null) $(id).value = saved;
+    $(id).addEventListener('change', () => localStorage.setItem(`sts2sim.${id}`, $(id).value));
+  }
 }
 
 // ─── Buttons ─────────────────────────────────────────────────────────────
@@ -350,8 +564,10 @@ $('run-btn').onclick = async () => {
   const body = {
     seeds: +$('cfg-seeds').value,
     k: +$('cfg-k').value,
+    patience: +$('cfg-patience').value,
     turns: +$('cfg-turns').value,
     epsilon: +$('cfg-eps').value,
+    ...changesPayload(),
   };
   try {
     const r = await fetch('/api/sim/start', {
@@ -373,5 +589,6 @@ $('refresh-btn').onclick = () => loadDeck();
 // ─── Boot ────────────────────────────────────────────────────────────────
 
 initCharts();
+restoreConfig();
 loadDeck();
 connectWs();

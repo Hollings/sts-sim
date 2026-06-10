@@ -27,7 +27,12 @@ internal sealed class SimServer
     private readonly HttpListener _listener = new();
     private readonly List<SocketState> _sockets = new();
     private readonly object _socketsLock = new();
+
+    // One sim job at a time: starting a new one cancels and awaits the old one
+    // so two jobs never interleave their WebSocket events.
+    private readonly SemaphoreSlim _jobGate = new(1, 1);
     private CancellationTokenSource? _currentJobCts;
+    private Task? _currentJobTask;
 
     private sealed class SocketState
     {
@@ -95,6 +100,9 @@ internal sealed class SimServer
                 case "/api/deck":
                     await ServeDeck(ctx);
                     break;
+                case "/api/cards":
+                    await ServeCards(ctx);
+                    break;
                 case "/api/sim/start":
                     await ServeSimStart(ctx);
                     break;
@@ -122,8 +130,11 @@ internal sealed class SimServer
     private async Task ServeStatic(HttpListenerContext ctx, string path)
     {
         if (path == "/") path = "/index.html";
-        var file = Path.Combine(WebRoot, path.TrimStart('/'));
-        if (!File.Exists(file))
+        // Resolve and confine to the web root — "/../" must not escape it.
+        var rootFull = Path.GetFullPath(WebRoot);
+        var file = Path.GetFullPath(Path.Combine(rootFull, path.TrimStart('/')));
+        if (!file.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(file))
         {
             Send(ctx, 404, "text/plain", "Not found: " + path);
             return;
@@ -178,6 +189,21 @@ internal sealed class SimServer
         await SendJson(ctx, 200, payload);
     }
 
+    // ─── /api/cards — addable-card catalog for the deck editor ──────────────
+
+    private async Task ServeCards(HttpListenerContext ctx)
+    {
+        var deck = SaveFileReader.ReadFreshest();
+        if (deck == null)
+        {
+            Send(ctx, 404, "application/json", "{\"error\":\"no save file found\"}");
+            return;
+        }
+        var cards = CardCatalog.GetAddableCards(deck.CharacterId)
+            .Select(c => new { id = c.Id, name = c.Name, cost = c.Cost, cardType = c.Type, rarity = c.Rarity });
+        await SendJson(ctx, 200, new { character = deck.CharacterId, cards });
+    }
+
     // ─── /api/sim/start ────────────────────────────────────────────────────
 
     private async Task ServeSimStart(HttpListenerContext ctx)
@@ -192,17 +218,21 @@ internal sealed class SimServer
             return;
         }
 
-        // Resolve card IDs to C# Types and pair with upgrade level from save.
-        List<Harness.DeckEntry> deckEntries;
+        List<Harness.DeckEntry> baseEntries;
+        List<Harness.DeckEntry>? variantEntries = null;
+        string? changeSummary = null;
         try
         {
-            deckEntries = deck.Cards
-                .Select(c =>
-                {
-                    var t = CardIdResolver.Resolve(c.Id) ?? throw new ArgumentException($"Unknown card id '{c.Id}'");
-                    return new Harness.DeckEntry(t, c.UpgradeLevel);
-                })
-                .ToList();
+            baseEntries = ResolveEntries(deck.Cards);
+
+            var removals = req.Removals ?? new List<CardChange>();
+            var additions = req.Additions ?? new List<CardChange>();
+            if (removals.Count > 0 || additions.Count > 0)
+            {
+                var variantCards = ApplyChanges(deck.Cards, removals, additions);
+                variantEntries = ResolveEntries(variantCards);
+                changeSummary = DescribeChanges(removals, additions);
+            }
         }
         catch (Exception ex)
         {
@@ -211,24 +241,87 @@ internal sealed class SimServer
         }
 
         // Sim runs on a background task; we ack immediately and stream progress on /ws.
-        _currentJobCts?.Cancel();
-        _currentJobCts = new CancellationTokenSource();
-        var ct = _currentJobCts.Token;
+        // The gate makes "stop old, start new" atomic so events never interleave.
+        await _jobGate.WaitAsync();
+        try
+        {
+            _currentJobCts?.Cancel();
+            if (_currentJobTask != null)
+            {
+                try { await _currentJobTask; } catch { /* old job's exceptions already broadcast */ }
+            }
+            _currentJobCts?.Dispose();
+            _currentJobCts = new CancellationTokenSource();
+            var ct = _currentJobCts.Token;
+
+            var job = new SimJob
+            {
+                Deck = baseEntries,
+                VariantDeck = variantEntries,
+                ChangeSummary = changeSummary,
+                Relics = deck.Relics.Where(r => !string.IsNullOrEmpty(r)).ToList(),
+                CharacterId = deck.CharacterId,
+                BroadcastEvent = BroadcastEvent,
+                Seeds = req.Seeds,
+                K = req.K,
+                Turns = req.Turns,
+                Epsilon = req.Epsilon,
+                Patience = req.Patience,
+            };
+            _currentJobTask = Task.Run(() => job.Run(ct), CancellationToken.None);
+        }
+        finally
+        {
+            _jobGate.Release();
+        }
 
         Send(ctx, 200, "application/json", "{\"ok\":true,\"started\":true}");
+    }
 
-        var job = new SimJob
+    private static List<Harness.DeckEntry> ResolveEntries(IEnumerable<SaveFileReader.DeckCard> cards)
+        => cards.Select(c =>
         {
-            Deck = deckEntries,
-            Relics = deck.Relics.Where(r => !string.IsNullOrEmpty(r)).ToList(),
-            CharacterId = deck.CharacterId,
-            BroadcastEvent = BroadcastEvent,
-            Seeds = req.Seeds,
-            K = req.K,
-            Turns = req.Turns,
-            Epsilon = req.Epsilon,
-        };
-        _ = Task.Run(() => job.Run(ct), ct);
+            var t = CardIdResolver.Resolve(c.Id) ?? throw new ArgumentException($"Unknown card id '{c.Id}'");
+            return new Harness.DeckEntry(t, c.UpgradeLevel);
+        }).ToList();
+
+    /// <summary>Apply remove/add requests to the save-file deck to produce the variant.</summary>
+    private static List<SaveFileReader.DeckCard> ApplyChanges(
+        IReadOnlyList<SaveFileReader.DeckCard> cards,
+        IReadOnlyList<CardChange> removals,
+        IReadOnlyList<CardChange> additions)
+    {
+        var result = new List<SaveFileReader.DeckCard>(cards);
+        foreach (var rem in removals)
+        {
+            for (int n = 0; n < Math.Max(1, rem.Count); n++)
+            {
+                var idx = result.FindIndex(c => c.Id == rem.Id && c.UpgradeLevel == rem.Upgrade);
+                if (idx < 0)
+                    throw new ArgumentException($"Cannot remove '{rem.Id}' (upgrade {rem.Upgrade}): not (or no longer) in deck");
+                result.RemoveAt(idx);
+            }
+        }
+        foreach (var add in additions)
+        {
+            if (CardIdResolver.Resolve(add.Id) == null)
+                throw new ArgumentException($"Unknown card id '{add.Id}'");
+            for (int n = 0; n < Math.Max(1, add.Count); n++)
+                result.Add(new SaveFileReader.DeckCard(add.Id, FloorAdded: 0, UpgradeLevel: add.Upgrade));
+        }
+        if (result.Count == 0)
+            throw new ArgumentException("Variant deck would be empty");
+        return result;
+    }
+
+    private static string DescribeChanges(IReadOnlyList<CardChange> removals, IReadOnlyList<CardChange> additions)
+    {
+        var parts = new List<string>();
+        foreach (var r in removals)
+            parts.Add($"−{CardLabels.Format(r.Id, r.Upgrade)}{(r.Count > 1 ? $" ×{r.Count}" : "")}");
+        foreach (var a in additions)
+            parts.Add($"+{CardLabels.Format(a.Id, a.Upgrade)}{(a.Count > 1 ? $" ×{a.Count}" : "")}");
+        return string.Join(" · ", parts);
     }
 
     // ─── WebSocket ─────────────────────────────────────────────────────────
@@ -330,5 +423,18 @@ internal sealed class SimServer
         public int K { get; set; } = 30;
         public int Turns { get; set; } = 5;
         public double Epsilon { get; set; } = 0.30;
+        /// <summary>Adaptive early-stop patience; 0 disables.</summary>
+        public int Patience { get; set; } = 0;
+        /// <summary>Cards to remove from the save deck (A/B variant).</summary>
+        public List<CardChange>? Removals { get; set; }
+        /// <summary>Cards to add to the save deck (A/B variant).</summary>
+        public List<CardChange>? Additions { get; set; }
+    }
+
+    private sealed class CardChange
+    {
+        public string Id { get; set; } = "";
+        public int Upgrade { get; set; }
+        public int Count { get; set; } = 1;
     }
 }

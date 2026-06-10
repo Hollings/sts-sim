@@ -25,7 +25,9 @@
   header .sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
   main { display: grid; grid-template-columns: 360px 1fr; gap: 0; min-height: calc(100vh - 60px); }
   aside { padding: 16px 24px; border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; }
-  section { padding: 16px 24px; }
+  /* min-width: 0 lets the grid column shrink below the charts' intrinsic
+     canvas width — without it the whole page overflows horizontally. */
+  section { padding: 16px 24px; min-width: 0; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent-2); margin: 24px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
   h2:first-child { margin-top: 0; }
 
@@ -37,6 +39,22 @@
   ul.cards li { padding: 4px 8px; display: flex; justify-content: space-between; border-radius: 3px; }
   ul.cards li:nth-child(even) { background: rgba(255,255,255,0.03); }
   ul.cards .count { color: var(--accent-2); font-weight: bold; }
+
+  /* ─── Deck editor: removable cards + pending additions ──── */
+  .hint { font-size: 11px; color: var(--fg-dim); font-style: italic; margin: 2px 0 6px; }
+  ul.cards li.editable { cursor: pointer; user-select: none; }
+  ul.cards li.editable:hover { background: rgba(139,25,19,0.25); }
+  ul.cards li .removed-tag { color: var(--bad); font-size: 11px; font-weight: bold; margin-left: 6px; white-space: nowrap; }
+  ul.cards li.removing > span:first-child { text-decoration: line-through; color: var(--fg-dim); }
+  ul.cards li.added { color: var(--good); }
+  ul.cards li.added .count { color: var(--good); }
+  .add-card-row { display: flex; gap: 6px; margin-top: 8px; }
+  .add-card-row input[type=text] { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border); padding: 5px 8px; border-radius: 3px; font: inherit; min-width: 0; }
+  .add-card-row label { display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+  .add-card-row button { padding: 5px 10px; }
+  .changes-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding: 6px 8px; background: rgba(212,161,66,0.12); border: 1px solid var(--accent-2); border-radius: 3px; font-size: 12px; }
+  .changes-bar .clear { color: var(--bad); cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; font: inherit; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .changes-bar.hidden { display: none; }
 
   /* ─── Sim config form ───────────────────────────────────── */
   .config { background: var(--bg-2); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
@@ -65,9 +83,23 @@
   .verdict.error { background: #4a1c1c; color: var(--bad); }
   .empty { color: var(--fg-dim); font-style: italic; padding: 8px; }
 
+  /* ─── A/B verdict panel ─────────────────────────────────── */
+  .ab-panel { margin-bottom: 12px; padding: 14px; border-radius: 4px; border: 2px solid var(--border); background: var(--bg-2); }
+  .ab-panel.hidden { display: none; }
+  .ab-panel.good { border-color: var(--good); }
+  .ab-panel.bad { border-color: var(--bad); }
+  .ab-panel .ab-verdict-line { font-size: 16px; font-weight: bold; margin-bottom: 8px; }
+  .ab-panel.good .ab-verdict-line { color: var(--good); }
+  .ab-panel.bad .ab-verdict-line { color: var(--bad); }
+  .ab-panel.neutral .ab-verdict-line { color: var(--accent-2); }
+  .ab-panel .ab-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px; font-size: 13px; }
+  .ab-panel .ab-detail div { background: var(--bg); padding: 6px 10px; border-radius: 3px; }
+  .ab-panel .ab-detail .label { display: block; color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .ab-panel .ab-detail .value { font-variant-numeric: tabular-nums; font-weight: bold; }
+
   /* ─── Charts ────────────────────────────────────────────── */
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; position: relative; height: 260px; }
+  .chart-box { background: var(--bg-2); padding: 12px; border-radius: 4px; position: relative; height: 260px; min-width: 0; }
   .chart-box.hist-box { height: 180px; }
   .chart-box h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--accent-2); }
   .chart-box canvas { max-height: calc(100% - 24px); }
@@ -105,7 +137,18 @@
 
     <h2>Deck</h2>
     <div id="deck-info"></div>
+    <div class="hint">Click a card to mark a copy for removal (A/B test). Click again to cycle.</div>
     <ul class="cards" id="deck-cards"></ul>
+    <div class="add-card-row">
+      <input id="add-card-input" type="text" list="card-options" placeholder="Add a card…" autocomplete="off">
+      <datalist id="card-options"></datalist>
+      <label><input id="add-card-upgraded" type="checkbox">+</label>
+      <button id="add-card-btn" class="stop" title="Add this card to the variant deck">＋</button>
+    </div>
+    <div class="changes-bar hidden" id="changes-bar">
+      <span id="changes-text"></span>
+      <button class="clear" id="changes-clear">clear</button>
+    </div>
 
     <h2>Relics</h2>
     <ul class="cards" id="relics"></ul>
@@ -114,6 +157,7 @@
     <div class="config">
       <div class="field"><label>Seeds (shuffles tried)</label><input id="cfg-seeds" type="number" value="200" min="10" max="5000"></div>
       <div class="field"><label>K (plays per seed)</label><input id="cfg-k" type="number" value="30" min="1" max="500"></div>
+      <div class="field"><label>Patience (0 = fixed K)</label><input id="cfg-patience" type="number" value="12" min="0" max="500" title="Stop a seed early after this many samples without improvement. 0 always runs all K."></div>
       <div class="field"><label>Turns / combat</label><input id="cfg-turns" type="number" value="5" min="1" max="20"></div>
       <div class="field"><label>ε (exploration)</label><input id="cfg-eps" type="number" value="0.30" step="0.05" min="0" max="1"></div>
     </div>
@@ -125,6 +169,11 @@
     <div class="verdict idle" id="verdict">Idle. Click "Run Sim" to start.</div>
   </aside>
   <section>
+    <div class="ab-panel hidden" id="ab-panel">
+      <div class="ab-verdict-line" id="ab-verdict-line"></div>
+      <div class="ab-detail" id="ab-detail"></div>
+    </div>
+
     <h2>Live Stats</h2>
     <div id="stats"></div>
     <div class="progress-bar"><div id="prog" style="width:0%"></div></div>
