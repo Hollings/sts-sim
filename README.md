@@ -1,53 +1,37 @@
-# StS2Sim — Headless Damage-Per-Turn Simulator
+# StS2Sim — Headless Deck Simulator
 
-Runs the actual `sts2.dll` game logic in a console process to benchmark damage output of arbitrary card decks. No Godot scene tree, no rendering, no real Godot runtime.
+Runs the actual `sts2.dll` game logic in a console process to benchmark damage output of arbitrary card decks — and to answer "should I add card X?" with a statistically grounded A/B test. No Godot scene tree, no rendering, no real Godot runtime.
 
 ## Build & run
 
 ```bash
 cd StS2Sim
-dotnet run -p:STS2GameDir="C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
+dotnet run -c Release -p:STS2GameDir="C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
 ```
 
-## Sample output
+Default mode starts the embedded web UI on `http://localhost:52324` and opens the browser. It reads your freshest `current_run.save`, shows the deck, and lets you:
 
+- run a best-of-K damage sim with live charts (per-seed scatter, running average ± CI, histogram),
+- click cards to mark removals and pick cards to add, then run an **A/B comparison** — baseline vs edited deck on identical shuffle seeds with a paired z-test verdict ("ADD IT / DON'T / INCONCLUSIVE").
+
+Other modes:
+
+```bash
+dotnet run -c Release -- smoke         # 14 fast Ironclad assertion tests
+dotnet run -c Release -- silent-tests  # 174-test Silent card battery (exit 2 on harness crashes)
+dotnet run -c Release -- experiment    # legacy console K-curve + unpaired A/B
 ```
-Deck: All Strikes (10 Strike)
-  Damage/turn: mean=18.0  p50=18.0  p95=18.0
-  Sample trial: Turn 1: 18 via [STRIKE, STRIKE, STRIKE]   (3 energy, 3 strikes @ 6 dmg)
 
-Deck: Strike+Bash heavy (5 Strike, 5 Bash)
-  Damage/turn: mean=14.7   <- worse! Bash is 4 dmg/energy vs Strike's 6.
-```
+## How it works (short version)
 
-## How the bootstrap works
+The game DLL was built for a Godot host; `Harness.Bootstrap()` tricks it into running outside one: `TestMode` short-circuits every animation wait, a handful of Harmony shims stub out the native-interop entry points (logger, `Time.GetTicksMsec`, localization, shuffle pacing), and `ModelDb` is initialized directly so all 1611 game models register without the resource pipeline. Combat state is then assembled by hand per trial: real `Player`, real `CombatState`, a 9999-HP BigDummy target, and the real hook pipeline (relics + powers fire through `IterateHookListeners`).
 
-The game DLL was built for a Godot host. We trick it into running outside one.
+Card plays go through the game's own code: `card.SpendResources()` (correct X-cost capture and energy debits) followed by `card.OnPlayWrapper(...)` — so Strike does what Strike does in the live game, after every patch, with no reimplementation.
 
-1. **Set `TestMode.IsOn = true`** — flips `NonInteractiveMode.IsActive`, which short-circuits every `Cmd.Wait` / `Cmd.CustomScaledWait` in the codebase. No SceneTree timers, no awaits.
-2. **Harmony-patch a few Godot.* entry points** that crash without the native runtime:
-   - `Logger.GetIsRunningFromGodotEditor` → return false.
-   - `ConsoleLogPrinter.Print` → `Console.WriteLine` instead of `GD.Print`.
-   - `Godot.Time.GetTicksMsec` → return 0.
-   - `CombatState.IterateHookListeners` → empty (Phase 1: no powers/relics).
-   - `Creature.ToString` → bypass localization.
-3. **Boot ModelDb manually**: `ModelDb.Init()` + `ModelIdSerializationCache.Init()` + `ModelDb.InitIds()`. Registers all 1611 game models (cards, monsters, relics, etc.) without touching Godot's resource pipeline.
-4. **Set up combat state by hand**: `Player.CreateForNewRun<Ironclad>()`, then `new CombatState()` with `NullRunState`. Reflection sets `CombatManager.Instance._state` and flips `IsInProgress` to `true`.
-5. **Use real game card playback**: `CardModel.OnPlayWrapper(...)` runs `StrikeIronclad.OnPlay → DamageCmd.Attack(6).Execute → CreatureCmd.Damage → Creature.LoseHpInternal`. Same code paths the live game uses.
+See [CLAUDE.md](CLAUDE.md) for the full bootstrap walkthrough, project layout, the best-of-K + paired-test algorithm rationale, and known footguns.
 
-## Known limits (Phase 1 only — DPS analysis)
+## Accuracy status
 
-- **No hooks fire**: no powers, relics, enchantments, afflictions affect damage. We `IterateHookListeners` -> empty. Burning Blood, Strength, etc. do nothing.
-- **Card costs use `EnergyCost.GetResolved()`** — temporary cost reductions/increases mid-combat won't be applied.
-- **No turn-end / turn-start triggers** — we just dump hand to discard between turns.
-- **No multi-target / random-target attacks** verified (single-target only via BigDummy).
-
-These can all be enabled in Phase 2 by progressively re-enabling parts of `CombatManager.SetUpCombat` and `IterateHookListeners`.
-
-## Project layout
-
-- `Program.cs` — entry point; installs assembly resolver and Godot shims.
-- `GodotShims.cs` — Harmony patches that let `sts2.dll` think it's in a Godot host.
-- `Harness.cs` — bootstrap + helpers for spinning up a single isolated combat.
-- `DamagePerTurnSim.cs` — the actual benchmark (draw 5, play attacks, end turn, repeat).
-- `Sim.cs` — defines decks under test and prints stats.
+- Phase 1 (card piles, draw, energy, block, exhaust, multi-hit) — done, smoke-tested.
+- Phase 2 (powers, relics, hooks, turn-cycle events) — done, verified by the Silent battery (166/174 pass, 8 skips for unimplemented mechanics like multi-target).
+- Phase 3 (real enemy turns / survivability) — not started; the sim measures damage ceiling, not survival.

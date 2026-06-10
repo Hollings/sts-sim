@@ -24,11 +24,12 @@ Default mode: bootstraps + starts the embedded HTTP server on port 52324
 and opens the browser. The UI reads the freshest `current_run.save`,
 shows your deck, and lets you run sim batches with live-streaming charts.
 
-Console-only experiment mode (no UI):
+Console-only modes (no UI):
 ```bash
-dotnet run -c Release -- experiment
+dotnet run -c Release -- experiment    # legacy headline A/B + K-vs-accuracy console output
+dotnet run -c Release -- smoke         # just the 14 Ironclad assertion tests, fast
+dotnet run -c Release -- silent-tests  # the 174-test Silent card battery; exit 2 on crashes
 ```
-Runs the legacy headline A/B + K-vs-accuracy console output.
 
 The exe is fully standalone — no mod required, no Python, no game running.
 Just needs a `current_run.save` somewhere under `%APPDATA%\SlayTheSpire2\`.
@@ -82,18 +83,19 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | `Reflect.cs` | Single home for the private-member pokes we need (`CombatManager._state` / `IsInProgress`, `PlayerCombatState.Energy` setter, `Creature.CurrentHp` setter). MethodInfo cached at startup. |
 | `CardLabels.cs` | Display formatting: `"CARD.STRIKE_IRONCLAD"` + level → `"Strike Ironclad+"`. Single source of truth used by everywhere that renders a card name. |
 | `TurnHooks.cs` | `FireAfterTurnEnd(harness, side)` — manual listener iteration for end-of-turn power ticks (the official `Hook.AfterTurnEnd` requires `LocalContext.NetId` we don't have). |
-| `SmokeTests.cs` | Assertion-based tests: Strike=6, Bash applies Vulnerable, Inflame +Strength → Strike does 8, etc. **Run these first if anything seems off.** |
-| `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Per-turn body is `RunSingleTurn`; play loop is `PlayPhase`. |
-| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. New policies go here. |
-| `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. |
+| `SmokeTests.cs` | Assertion-based tests: Strike=6, Bash applies Vulnerable, Inflame +Strength → Strike does 8, etc. **Run these first if anything seems off** (`dotnet run -- smoke`). |
+| `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Per-turn body is `RunSingleTurn`; play loop is `PlayPhase`, which debits via the game's own `card.SpendResources()` (X-cost capture, 0-cost-at-0-energy, AfterEnergySpent hook all correct). |
+| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. `Playable` is two-tier: cheap screen (Unplayable keyword + cost) over the whole hand, the game's full `CanPlay()` (hook listeners) only on the final pick via `ChooseFrom` — calling CanPlay per hand card per pick cost ~3x throughput. |
+| `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. `Patience > 0` early-stops a seed after that many samples without improvement. `Summary.PerSeedBests` enables paired A/B tests. |
+| `CardCatalog.cs` | Character pool + colorless pool with display metadata — backs the UI's "add a card" picker (`GET /api/cards`). |
 | `Sim/ConvergenceRunner.cs` | Console-only. Anytime mode for debugging policy behavior. Not used by the web UI. |
 | `Sim/ExperimentMode.cs` | Console-only. Wires up the K-vs-accuracy curve + Defend-for-Inflame swap A/B. Runs only via `dotnet run -- experiment`. |
 | `SaveFileReader.cs` | Walks `%APPDATA%\SlayTheSpire2\steam\<steamid>\{,modded/}profile1\saves\current_run*.save`, picks freshest by mtime, parses player[0].deck. Pure file IO + System.Text.Json — no game state needed. |
 | `CardIdResolver.cs` | `"CARD.STRIKE_IRONCLAD"` → `typeof(StrikeIronclad)` via `ModelDb.GetByIdOrNull`. Requires `Harness.Bootstrap()` first. (Display formatting is in `CardLabels.cs`.) |
-| `Server/SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static), `GET /api/deck`, `POST /api/sim/start`, `POST /api/sim/stop`, `WS /ws`. Owns transport + WS fan-out only. |
-| `Server/SimJob.cs` | One end-to-end best-of-K run with progress events shaped for the UI. Wire-shape contract: event `type` strings + field names match `www/app.js`. |
+| `Server/SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static, confined to webroot), `GET /api/deck`, `GET /api/cards`, `POST /api/sim/start` (accepts `removals`/`additions` for A/B), `POST /api/sim/stop`, `WS /ws`. One job at a time: a new start cancels and awaits the old job under `_jobGate` so events never interleave. |
+| `Server/SimJob.cs` | One end-to-end best-of-K run with progress events shaped for the UI. With `VariantDeck` set it runs baseline then variant on identical shuffle seeds and finishes with a **paired z-test** verdict (`abDone` event) — pairing cancels shuffle luck, so ~40 seeds give the discrimination the old unpaired console flow needed 500 for. Wire-shape contract: event `type` strings + field names match `www/app.js`. |
 | `AutoCardSelector.cs` | Global "auto-pick" selector for cards like Armaments / Havoc that wait on a `CardSelectCmd`. |
-| `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Three charts: per-seed scatter, running avg with 95% CI band, damage histogram. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
+| `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Deck editor (click a card to mark a copy for removal, datalist picker to add cards) drives the A/B flow. Three charts: per-seed scatter, running avg with 95% CI band, damage histogram — all dual-series in A/B mode (blue baseline / gold variant). Verdict panel renders the `abDone` paired test. Config fields persist in localStorage. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
 
 ## The algorithm we settled on
 
@@ -108,12 +110,16 @@ For each shuffle seed s in N seeds:
 metric = mean(per_seed_maxes)
 ci95   = 1.96 × stderr(per_seed_maxes)
 
-For deck A vs deck B comparison:
-    Run above for both with same seeds + same policy
-    diff = B.metric - A.metric
-    z    = diff / sqrt(A.stderr² + B.stderr²)
-    verdict = z>2 → "ADD IT", z<-2 → "REMOVE", else "INCONCLUSIVE"
+For deck A vs deck B comparison (SimJob A/B path — paired):
+    Run above for both with the SAME seed sequence + same policy
+    diff_i = B.perSeedBest[i] - A.perSeedBest[i]      # same shuffle on both sides
+    z      = mean(diff) / stderr(diff)
+    verdict = z>1.96 → "ADD IT", z<-1.96 → "DON'T", else "INCONCLUSIVE"
 ```
+
+The paired test differences out shuffle luck, so its CI is far tighter than the
+unpaired two-sample z (which `ExperimentMode.DeckAvsB` still uses): ~40 paired
+seeds discriminate what ~500 unpaired seeds did.
 
 **Why this and not other things:**
 
@@ -138,11 +144,12 @@ For deck A vs deck B comparison:
 |---|---|---|---|
 | `ε` (epsilon) | 0.30 | 0.10–0.50 | Higher = better at finding setup-card plays, more noise per sample. 0.30 works for both pure-damage and setup-heavy decks. |
 | `K` (samples per seed) | 30–50 | 10–300 | Higher = tighter CI **and** higher mean (low K systematically underestimates setup decks). Diminishing returns past ~100. |
-| `seeds` | 200–500 | 100–2000 | Higher = tighter CI on overall metric. 500 gives ±1 dmg/5-turn confidence. |
+| `seeds` | 200–500 | 100–2000 | Higher = tighter CI on overall metric. 500 gives ±1 dmg/5-turn confidence. Paired A/B needs far fewer (~100–200). |
 | `Turns` | 5 | 3–10 | Setup cards become more valuable with more turns. 5 is a reasonable mid-game encounter length. |
+| `Patience` | 12 (UI default) | 0–50 | Early-stop a seed's inner K loop after this many samples without a new best. 0 = always run all K. Cuts compute 2-4x; identical settings on both A/B sides cancel the slight low bias. |
 
-Throughput: ~1000 trials/sec single-threaded → 25k runs ≈ 25 sec per deck. A full
-A/B test is ~1 minute.
+Throughput: ~550-600 trials/sec single-threaded on a 14-card deck with relics
+(measured June 2026). 200 seeds × K=30 with patience 12 ≈ 20s; a full A/B ≈ 40s.
 
 ## Phase 1 vs Phase 2 status
 
@@ -213,21 +220,25 @@ applies +2 Strength, next Strike does 8 (6+2).
 
 ## What to build next (roughly in order of value)
 
-1. **Card-swap UI**: in the web frontend, click a card in the deck to remove,
-   pick another to add, run an A/B against current. The actual "should I add
-   this card?" feature.
-2. **Adaptive K**: stop sampling per-seed when CI < threshold instead of fixed K.
-   Saves 5-10x compute on easy verdicts.
-3. **Smarter base policy**: hand-coded heuristics like "play Powers turn 1",
+~~Card-swap A/B UI~~ — DONE (deck editor + paired-z verdict, June 2026).
+~~Adaptive K~~ — DONE (Patience knob, June 2026).
+
+1. **Smarter base policy**: hand-coded heuristics like "play Powers turn 1",
    "apply Vulnerable before attacking". Could shrink ε-needed and tighten CI.
-4. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-3 feel slow.
-5. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
+2. **Multi-swap search**: run a batch of single-card A/Bs ("which of my 3 card
+   reward options is best?") in one click — the runner already supports it,
+   needs a queue in SimJob + UI.
+3. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-2 feel slow.
+4. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
 
 ## UI notes (frontend)
 
 - WebSocket auto-reconnects on disconnect (1-second backoff).
-- Charts throttle updates to every 3rd seed event for big runs to keep the
-  browser responsive. Final update happens on `done`.
+- Chart redraws are coalesced into a single requestAnimationFrame tick
+  (`chartsDirty` flag) — at most one redraw per frame regardless of event rate.
+  Final update happens on `done`/`abDone`.
+- Deck-editor state (removals map + additions list) is cleared whenever the
+  deck reloads from disk — stale edits against a changed save make no sense.
 - The "freshest save wins" rule means if the user has both modded and unmodded
   profiles, whichever was last touched is what we read. Could add a profile
   picker later, but the typical user only plays one mode at a time.
