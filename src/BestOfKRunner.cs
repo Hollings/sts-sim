@@ -24,6 +24,14 @@ internal sealed class BestOfKRunner
     public int HandSize { get; init; } = 5;
     public int Seeds { get; init; } = 100;
     public int InnerSamples { get; init; } = 100;
+    /// <summary>
+    /// Adaptive early-stop: 0 = always run all K samples. Otherwise, stop a
+    /// seed's inner sampling once this many consecutive samples fail to improve
+    /// that seed's best. Cuts compute 3-10x on easy seeds while keeping K as
+    /// the hard cap. Slight low bias vs full K — but identical settings on both
+    /// sides of an A/B comparison cancel it.
+    /// </summary>
+    public int Patience { get; init; } = 0;
     public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromSeconds(2);
     public bool Quiet { get; init; } = false;
     /// <summary>Fires after each seed completes K samples — for live UI updates.</summary>
@@ -51,6 +59,10 @@ internal sealed class BestOfKRunner
         long totalRuns = 0;
         var lastPrint = TimeSpan.Zero;
         DamagePerTurnSim.TrialResult? globalBest = null;
+        // Running sums for progress stats — avoids re-scanning the per-seed
+        // array on every seed (O(n^2) over a long run).
+        double runningSum = 0, runningSumSq = 0;
+        int runningMax = int.MinValue;
 
         if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={Policy.Name} | seeds={Seeds} × K={InnerSamples} ===");
 
@@ -86,24 +98,28 @@ internal sealed class BestOfKRunner
                     globalBest = result;
                     OnNewBest?.Invoke(result);
                 }
+                if (Patience > 0 && k + 1 - firstFoundAt >= Patience)
+                    break; // this seed has gone Patience samples without improving
             }
             perSeedBest[s] = seedBest;
             perSeedSampleK[s] = firstFoundAt;
             completed = s + 1;
+            runningSum += seedBest;
+            runningSumSq += (double)seedBest * seedBest;
+            if (seedBest > runningMax) runningMax = seedBest;
 
             if (OnSeedDone != null)
             {
-                var bestsSoFar = perSeedBest.Take(s + 1).ToList();
-                var rAvg = bestsSoFar.Average();
-                var rVar = s == 0 ? 0 : bestsSoFar.Select(x => Math.Pow(x - rAvg, 2)).Sum() / s;
-                var rStdErr = s == 0 ? 0 : Math.Sqrt(rVar) / Math.Sqrt(s + 1);
+                int n = s + 1;
+                var rAvg = runningSum / n;
+                var rVar = n == 1 ? 0 : Math.Max(0, runningSumSq - runningSum * runningSum / n) / (n - 1);
+                var rStdErr = Math.Sqrt(rVar) / Math.Sqrt(n);
                 OnSeedDone(new SeedProgress(s, Seeds, seedBest, rAvg, rStdErr, totalRuns, sw.Elapsed));
             }
 
             if (!Quiet && sw.Elapsed - lastPrint >= ProgressInterval)
             {
-                var seenBests = perSeedBest.Take(s + 1).ToList();
-                Console.WriteLine($"  t={sw.Elapsed.TotalSeconds:F1}s  seeds={s + 1}/{Seeds}  runs={totalRuns}  avg-of-best={seenBests.Average():F1}  best-of-best={seenBests.Max()}  rate={totalRuns / sw.Elapsed.TotalSeconds:F0}/s");
+                Console.WriteLine($"  t={sw.Elapsed.TotalSeconds:F1}s  seeds={s + 1}/{Seeds}  runs={totalRuns}  avg-of-best={runningSum / (s + 1):F1}  best-of-best={runningMax}  rate={totalRuns / sw.Elapsed.TotalSeconds:F0}/s");
                 lastPrint = sw.Elapsed;
             }
 
@@ -154,6 +170,7 @@ internal sealed class BestOfKRunner
             MaxConvergenceK = maxFoundAt,
             Elapsed = sw.Elapsed,
             TotalRuns = totalRuns,
+            PerSeedBests = bests,
         };
     }
 
@@ -173,5 +190,8 @@ internal sealed class BestOfKRunner
         public required int MaxConvergenceK { get; init; }
         public required TimeSpan Elapsed { get; init; }
         public required long TotalRuns { get; init; }
+        /// <summary>Per-seed best damage, in seed order. Lets A/B callers run a
+        /// paired test (same seed index = same shuffle seed on both sides).</summary>
+        public required IReadOnlyList<int> PerSeedBests { get; init; }
     }
 }

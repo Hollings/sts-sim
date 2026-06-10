@@ -162,6 +162,15 @@ internal static class Harness
         typeof(ModelDb).GetMethod(nameof(ModelDb.Card))
         ?? throw new InvalidOperationException("ModelDb.Card<T> not found");
 
+    // ReplaceDeck runs once per trial in the sim hot loop (~thousands/sec);
+    // MakeGenericMethod + Invoke per card is measurable there. The canonical
+    // model is immutable and process-wide, so cache it per card type.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, CardModel> CanonicalCardCache = new();
+
+    private static CardModel CanonicalCard(Type cardType)
+        => CanonicalCardCache.GetOrAdd(cardType,
+            t => (CardModel)ModelDbCardGeneric.MakeGenericMethod(t).Invoke(null, null)!);
+
     private static void ReplaceDeck(Player player, IEnumerable<DeckEntry> entries)
     {
         var deck = player.Deck;
@@ -172,7 +181,7 @@ internal static class Harness
         }
         foreach (var entry in entries)
         {
-            var canonical = (CardModel)ModelDbCardGeneric.MakeGenericMethod(entry.CardType).Invoke(null, null)!;
+            var canonical = CanonicalCard(entry.CardType);
             var copy = (CardModel)canonical.ToMutable();
             copy.FloorAddedToDeck = 1;
             // Apply upgrades. Mirrors CardModel.FromSerializable: each level
