@@ -52,8 +52,10 @@ internal sealed class DamagePerTurnSim
         try
         {
             // Fire the at-combat-start hook so relics like Vajra (+1 Strength on enter)
-            // and Bronze Scales apply their effects before turn 1.
+            // and Bronze Scales apply their effects before turn 1, then the
+            // combat-start pair (Bound Phylactery summons Necrobinder's Osty here).
             await TurnHooks.FireAfterRoomEntered(harness);
+            await TurnHooks.FireBeforeCombatStart(harness);
 
             var turnResults = new List<TurnResult>();
             for (int turn = 0; turn < Turns; turn++)

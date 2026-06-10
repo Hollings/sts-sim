@@ -38,13 +38,16 @@ dotnet run -c Release -- smoke            # 15 fast Ironclad assertion tests
 dotnet run -c Release -- silent-tests     # 174-test Silent card battery (exit 2 on harness crashes)
 dotnet run -c Release -- encounter-sweep  # one short fight vs all 60 encounters (exit 2 on crashes)
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (exit 2 on crashes)
+dotnet run -c Release -- char-tests       # 44-test Regent/Necrobinder/Defect mechanics battery (exit 2 on crashes)
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark
 dotnet run -c Release -- experiment       # legacy console K-curve + unpaired A/B
 ```
 
 All five characters work (Ironclad, Silent, Regent, Necrobinder, Defect) — the
-sim reads whoever your current run is playing. Card-level assertion coverage is
-deepest for Ironclad and Silent; the others run the same real game code.
+sim reads whoever your current run is playing. Every character now has its own
+assertion battery: Ironclad (smoke), Silent (174 tests, the deepest), and
+`char-tests` covering the fragile mechanics of the other three — Defect orbs,
+Necrobinder's Osty/Souls, Regent's stars and Forge.
 
 ## How it works (short version)
 
@@ -57,5 +60,5 @@ See [CLAUDE.md](CLAUDE.md) for the full bootstrap walkthrough, project layout, t
 ## Accuracy status
 
 - Phase 1 (card piles, draw, energy, block, exhaust, multi-hit) — done, smoke-tested.
-- Phase 2 (powers, relics, hooks, turn-cycle events) — done, verified by the Silent battery (166/174 pass, 8 skips for unimplemented mechanics like multi-target).
+- Phase 2 (powers, relics, hooks, turn-cycle events) — done, verified by the Silent battery (166/174 pass, 8 skips for unimplemented mechanics like multi-target) and the character battery (44/44: orbs incl. end-of-turn passives, Osty, stars/Forge, all three starter relics).
 - Phase 3 (real enemy turns / survivability) — done; all 60 encounters run crash-free (`encounter-sweep`). Caveat: the play policy doesn't read enemy intents yet, so it only blocks when ε-exploration stumbles into it — win rates are a fair *comparator* between decks but a *lower bound* on absolute winnability.

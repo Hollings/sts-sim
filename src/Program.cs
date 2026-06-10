@@ -163,6 +163,12 @@ internal static class Program
                 return await CharacterSweep.RunAll();
             }
 
+            // "char-tests" runs the Regent/Necrobinder/Defect card batteries
+            // (stars, Osty, orbs — the fragile character mechanics). Exit 2 on
+            // harness crashes.
+            if (args.Length > 0 && args[0] == "char-tests")
+                return await CharTests.CharTestsRunner.RunAll();
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

@@ -50,6 +50,19 @@ internal static class TurnHooks
         return FireOnAll(h, l => l.AfterRoomEntered(room));
     }
 
+    /// <summary>
+    /// Fire the combat-start hook pair. The game runs Hook.BeforeCombatStart
+    /// after all creatures are added, right before the first turn. Necrobinder's
+    /// starter relic (Bound Phylactery) summons the initial Osty here — without
+    /// this, every Osty card whiffs until Bodyguard is drawn or the relic's
+    /// round-2+ resummon fires.
+    /// </summary>
+    public static async Task FireBeforeCombatStart(Harness.CombatHarness h)
+    {
+        await FireOnAll(h, l => l.BeforeCombatStart());
+        await FireOnAll(h, l => l.BeforeCombatStartLate());
+    }
+
     // ─── Side-turn-start (relics fire here: Bag of Marbles, Lantern, etc.) ───
 
     public static Task FireBeforeSideTurnStart(Harness.CombatHarness h, CombatSide side)
@@ -108,6 +121,10 @@ internal static class TurnHooks
         // Fire AfterSideTurnStart on all listeners. Lantern grants turn-1 energy,
         // and other start-of-turn relic/power effects fire here.
         await FireAfterSideTurnStart(h, CombatSide.Player);
+
+        // Orb start-of-turn triggers — the game fires OrbQueue.AfterTurnStart
+        // right after the side-turn-start hooks (CombatManager, player side).
+        await pcs.OrbQueue.AfterTurnStart(h.Ctx);
 
         // Reset CapturedXValue on all hand cards so X-cost cards (Havoc-style)
         // re-capture cleanly each play.
@@ -269,6 +286,11 @@ internal static class TurnHooks
         var player = h.Player;
         var hand = PileType.Hand.GetPile(player);
         var discard = PileType.Discard.GetPile(player);
+
+        // Orb end-of-turn passives fire before everything else in the game's
+        // DoTurnEnd: lightning zaps a random enemy, frost grants block, dark
+        // accumulates its evoke value. Defect decks are inert without this.
+        await player.PlayerCombatState!.OrbQueue.BeforeTurnEnd(h.Ctx);
 
         // Snapshot first — exhausting and adding to play pile mutates Cards.
         var turnEndCards = new List<CardModel>();

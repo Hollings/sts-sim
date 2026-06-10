@@ -132,6 +132,15 @@ internal static class GodotShims
         // is what actually matters and runs separately.
         PatchPrefix(harmony, ncombatRoom, "AddCreature", nameof(NoOp_Prefix));
 
+        // OrbCmd.AddSlots (Capacitor, etc.) dereferences
+        // GetCreatureNode(player).OrbManager WITHOUT a null guard — the only
+        // orb-path UI call that doesn't (RemoveSlots uses ?.) — so it NREs on
+        // our null creature nodes. Replicate its two lines of capacity math
+        // and skip the slot animation.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.OrbCmd), "AddSlots"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(OrbCmd_AddSlots_Prefix))));
+
         // Knowledge Demon (and anything else forcing a "choose a card" screen)
         // calls CardSelectCmd.FromChooseACardScreen, which drives a UI flow.
         // Auto-pick the first option, mirroring AutoCardSelector's heuristic.
@@ -266,6 +275,20 @@ internal static class GodotShims
     private static bool NCombatRoom_GetCreatureNode_Prefix(ref MegaCrit.Sts2.Core.Nodes.Combat.NCreature? __result)
     {
         __result = null;
+        return false;
+    }
+
+    // Mirrors OrbCmd.AddSlots minus the AddSlotAnim UI call (capacity is
+    // capped at OrbQueue.maxCapacity = 10 in the original).
+    private static bool OrbCmd_AddSlots_Prefix(
+        MegaCrit.Sts2.Core.Entities.Players.Player player, int amount, ref Task __result)
+    {
+        if (!MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsOverOrEnding)
+        {
+            var queue = player.PlayerCombatState.OrbQueue;
+            queue.AddCapacity(Math.Min(10 - queue.Capacity, amount));
+        }
+        __result = Task.CompletedTask;
         return false;
     }
 

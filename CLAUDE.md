@@ -31,13 +31,19 @@ dotnet run -c Release -- smoke            # the 15 Ironclad assertion tests, fas
 dotnet run -c Release -- silent-tests     # the 174-test Silent card battery; exit 2 on crashes
 dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; exit 2 on crashes
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (dummy + fight); exit 2 on crashes
+dotnet run -c Release -- char-tests       # 44-test Regent/Necrobinder/Defect mechanics battery; exit 2 on crashes
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark on a pinned suite
 ```
 
 All five characters (Ironclad, Silent, Regent, Necrobinder, Defect) run in
-both modes — verified by `character-sweep`. Per-card assertion coverage is
-deepest for Ironclad (smoke) and Silent (174-test battery); other characters'
-cards run through the same real game code but without per-card assertions.
+both modes — verified by `character-sweep`. Per-card assertion coverage:
+Ironclad (smoke, 15), Silent (174-test battery, the deepest), and the
+`char-tests` battery for the other three — targeted at the fragile character
+mechanics rather than full pools: Defect orbs (channel/evoke/passives/Focus/
+slots/X-cost MultiCast), Necrobinder's Osty (summon/stack/whiff/IsPlayable
+gate/Souls/Sacrifice/history-driven Rattle), Regent stars (SpendResources
+debits, Forge/SovereignBlade, draw-scaling Kingly Punch, history-driven
+Radiate) plus all three starter relics.
 
 The exe is fully standalone — no mod required, no Python, no game running.
 Just needs a `current_run.save` somewhere under `%APPDATA%\SlayTheSpire2\`.
@@ -228,6 +234,16 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
 - **`Hook.AfterTurnEnd` requires `LocalContext.NetId` to be set, or it returns early.**
   We sidestep by manually iterating `state.IterateHookListeners()` and calling
   `listener.AfterTurnEnd()` directly — see `DamagePerTurnSim.FireAfterTurnEnd`.
+- **Orb passives and combat-start hooks are manual TurnHooks responsibilities.**
+  The game fires `OrbQueue.BeforeTurnEnd` (lightning zap / frost block / dark
+  accumulate) inside `CombatManager.DoTurnEnd`, `OrbQueue.AfterTurnStart` after
+  the player side-turn-start hooks, and `Hook.BeforeCombatStart` (Bound
+  Phylactery's initial Osty summon) before turn 1 — none of which our manual
+  turn flow got for free. TurnHooks now mirrors all three; if a new character
+  resource ticks "automatically" in the real game, suspect a missing
+  CombatManager call here first. Also: `OrbCmd.AddSlots` dereferences
+  `GetCreatureNode(...).OrbManager` with no null guard (unlike every other orb
+  UI call) — shimmed in GodotShims with the capacity math minus the anim.
 - **Discard→draw reshuffle in our DPT loop is NOT seeded by `RunState.Rng.Shuffle`** like
   the real game does. It's accidentally deterministic (iteration order) but not realistic.
   If we ever need realism here, route through `CardPileCmd.Shuffle` or seed our own.

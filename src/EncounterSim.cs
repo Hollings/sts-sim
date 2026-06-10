@@ -65,6 +65,7 @@ internal sealed class EncounterSim
             }
             TurnHooks.RollEnemyMoves(harness);
             await TurnHooks.FireAfterRoomEntered(harness);
+            await TurnHooks.FireBeforeCombatStart(harness);
 
             var player = harness.Player.Creature;
             var turnResults = new List<DamagePerTurnSim.TurnResult>();
