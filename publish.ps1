@@ -34,8 +34,10 @@ WHAT YOU NEED
   That's it: no .NET install, no mods, the game doesn't even need to be running.
 
 HOW TO RUN
-  1. Unzip this folder anywhere.
-  2. Double-click StS2Sim.exe.
+  1. Extract the WHOLE zip first (right-click -> Extract All). Don't run the
+     exe from inside the zip window - Windows extracts only the exe to a temp
+     folder, it can't find its runtime, and the window instantly closes.
+  2. Double-click StS2Sim.exe inside the extracted StS2Sim folder.
   3. Your browser opens http://localhost:52324 with your current deck loaded.
 
 WHAT IT DOES
@@ -46,6 +48,9 @@ WHAT IT DOES
     simulated with the real game logic (it runs the game's own code headless).
 
 TROUBLESHOOTING
+  - Window instantly closes: you ran the exe from inside the zip, or moved
+    the exe out of its folder. Extract everything; the exe needs the files
+    next to it. (Real errors keep the window open and tell you what's wrong.)
   - "Couldn't find Slay the Spire 2": the game isn't in a standard Steam
     location. Set the STS2_GAME_DIR environment variable to the game's
     data_sts2_windows_x86_64 folder and run again.
