@@ -86,7 +86,9 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | `TurnHooks.cs` | `FireAfterTurnEnd(harness, side)` — manual listener iteration for end-of-turn power ticks (the official `Hook.AfterTurnEnd` requires `LocalContext.NetId` we don't have). |
 | `SmokeTests.cs` | Assertion-based tests: Strike=6, Bash applies Vulnerable, Inflame +Strength → Strike does 8, etc. **Run these first if anything seems off** (`dotnet run -- smoke`). |
 | `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Per-turn body is `RunSingleTurn`; play loop is `PlayPhase`, which debits via the game's own `card.SpendResources()` (X-cost capture, 0-cost-at-0-energy, AfterEnergySpent hook all correct). |
-| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`. `Playable` is two-tier: cheap screen (Unplayable keyword + cost) over the whole hand, the game's full `CanPlay()` (hook listeners) only on the final pick via `ChooseFrom` — calling CanPlay per hand card per pick cost ~3x throughput. |
+| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`, `ThresholdPolicy(t)` (race until incoming damage would drop HP below t×maxHP, then stack block — t<0 never defends, ∞ turtles). `Playable` is two-tier: cheap screen (Unplayable keyword + cost) over the whole hand, the game's full `CanPlay()` (hook listeners) only on the final pick via `ChooseFrom` — calling CanPlay per hand card per pick cost ~3x throughput. |
+| `IntentReader.cs` | Telegraphed incoming damage for the current round, read the same way the intent UI does (NextMove.Intents) but with Hook.ModifyDamage run against OUR player — the game's own path resolves the player via netcode and silently falls back to base damage headless. |
+| `PolicyBench.cs` | Policy uplift benchmark (`dotnet run -- policy-bench`): pinned decks × encounters, race-only vs candidate policy setups on identical seeds, win-rate/score deltas + per-personality seed attribution. Win rate is a lower bound, so any uplift on same seeds = strictly more accurate. Run this before changing any play policy default. |
 | `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. `Patience > 0` early-stops a seed after that many samples without improvement. `Summary.PerSeedBests` enables paired A/B tests. |
 | `CardCatalog.cs` | Character pool + colorless pool with display metadata — backs the UI's "add a card" picker (`GET /api/cards`). |
 | `Sim/ConvergenceRunner.cs` | Console-only. Anytime mode for debugging policy behavior. Not used by the web UI. |
@@ -198,9 +200,13 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
   native init — it hard-kills the process (0xC0000005) during argument evaluation
   otherwise. A new monster touching an unstubbed member shows up as a CRASH in
   `encounter-sweep`; add a shim there.
-- **Boss survival is a lower bound.** The play policy doesn't read intents, so it
-  blocks only when ε-exploration happens to. Win rates discriminate decks fairly
-  (same policy both sides) but understate absolute winnability.
+- **Boss survival is a lower bound — but a tighter one than it looks.** The
+  default policy races and never deliberately blocks. We benchmarked
+  intent-aware blocking personalities (`policy-bench`) and they did NOT raise
+  win rates — racing dominates with every deck tested, including a scaling
+  deck. Defensive play only padded scores in already-decided fights. The
+  remaining known gap is multi-turn burst telegraphs (Prepare → Dismember),
+  which a one-turn intent read can't see.
 
 - **`CombatManager.Instance` is a singleton.** Cannot run two combats in parallel within
   one process without solving this. Subprocess or `AssemblyLoadContext` parallelism if
@@ -229,6 +235,7 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
 | "Best ever damage" as deck quality metric | Measures luckiest shuffle, not deck quality. All policies hit the same max within seconds — no discrimination. |
 | MCTS | Solves "best play for fixed seed" — not the deck-comparison question. Lock-in concern is real but ε-greedy sidesteps it via uniform exploration. Worth revisiting if we ever do TAS-style "optimal play for known seed". |
 | Bigger K instead of better policy | Marginal gains past K=100 on simple decks; can't escape the bias from pure-random base on setup decks. |
+| Threshold-portfolio play policies for boss fights | Built and benchmarked June 2026 (`ThresholdPolicy` + `BestOfKRunner.Portfolio` + `policy-bench`). Hypothesis: splitting K across race/thr15/thr50/turtle personalities samples defensive lines deliberately instead of by ε-lottery. Result: FALSIFIED as a default. Defensive personalities only pad scores in already-lost fights; wherever wins are reachable, diluting the race policy's sample budget lowers win rates (scaling deck vs Ceremonial Beast: 31% → 16% at 50/50 split). "Tank the hit, get the attack in" is the dominant strategy — the race policy was already playing correctly. Machinery kept for experiments; race-only stays the default. |
 
 ## Useful invariants
 
@@ -254,10 +261,15 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
 ~~Multi-candidate compare~~ — DONE ("which of these reward cards?" ranking, June 2026).
 ~~Phase 3 / boss fights~~ — DONE (encounter mode, win-rate + outcome score, June 2026).
 
-1. **Intent-aware policy**: read `monster.NextMove.Intents` and value block when a
-   big attack is telegraphed. Single biggest accuracy lever for boss win rates.
+~~Intent-aware policy~~ — BUILT AND FALSIFIED as a default (June 2026, see
+"Things we tested and ruled out"). The pieces (`ThresholdPolicy`, `IntentReader`,
+`Portfolio`, `policy-bench`) remain for experiments.
+
+1. **Per-turn play enumeration**: exhaustively order the hand within a turn
+   (small space at 5-7 cards / 3 energy) and score leaves by outcome — replaces
+   the policy question at the turn level. Validate with `policy-bench`.
 2. **Smarter base policy generally**: "play Powers turn 1", "Vulnerable before
-   attacking". Could shrink ε-needed and tighten CI.
+   attacking". Could shrink ε-needed and tighten CI. Validate with `policy-bench`.
 3. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-2 feel slow.
 
 ## UI notes (frontend)

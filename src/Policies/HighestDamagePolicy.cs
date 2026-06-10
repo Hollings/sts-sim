@@ -21,7 +21,7 @@ internal sealed class HighestDamagePolicy : IPlayPolicy
             cands => cands.OrderByDescending(EstimatedDamage).First());
     }
 
-    private static decimal EstimatedDamage(CardModel card)
+    internal static decimal EstimatedDamage(CardModel card)
     {
         if (card.Type != CardType.Attack) return 0m;
         try { return card.DynamicVars.Damage.BaseValue; }

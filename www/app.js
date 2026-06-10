@@ -53,6 +53,14 @@ const statTile = (label, value) =>
 
 const renderStats = tiles => { $('stats').innerHTML = tiles.join(''); };
 
+// "race 62% · thr15 28% · turtle 10%" from the personalities event field.
+function personalityMix(personalities) {
+  const total = personalities.reduce((s, p) => s + p.seeds, 0) || 1;
+  return personalities
+    .map(p => `${escapeHtml(p.name)} ${(100 * p.seeds / total).toFixed(0)}%`)
+    .join(' · ');
+}
+
 // ─── Charts (dynamic per-phase datasets) ─────────────────────────────────
 
 let bestChart, avgChart, histChart;
@@ -596,6 +604,8 @@ const eventHandlers = {
       statTile('Best / worst seed', `${e.bestOfBest} / ${e.worstSeedBest}`),
       statTile('Convergence (median K)', e.medianConvergenceK),
     );
+    if (e.personalities?.length)
+      tiles.push(statTile('Winning lines', personalityMix(e.personalities)));
     renderStats(tiles);
     setRunning(false);
   },

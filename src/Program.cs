@@ -66,6 +66,14 @@ internal static class Program
                 return await EncounterSweep.RunAll();
             }
 
+            // "policy-bench" measures play-policy uplift on a pinned deck ×
+            // encounter suite (win rate is a lower bound: higher = better).
+            if (args.Length > 0 && args[0] == "policy-bench")
+            {
+                Harness.Bootstrap();
+                return await PolicyBench.RunAll();
+            }
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

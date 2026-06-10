@@ -125,6 +125,14 @@ internal sealed class SimJob
     private async Task<BestOfKRunner.Summary> RunPhase(
         string phase, string label, IReadOnlyList<Harness.DeckEntry> deck, Type characterType, CancellationToken ct)
     {
+        // Deliberately NO policy portfolio here: policy-bench falsified it.
+        // Threshold/turtle personalities do win seeds (they pad scores in
+        // hopeless fights), but splitting the K budget away from the race
+        // policy measurably LOWERS win rates wherever wins are reachable —
+        // scaling deck vs Ceremonial Beast went 31% → 16% under a 50/50
+        // split. Under best-of-K, sample budget on the best personality
+        // beats strategy diversity, and racing is the best personality.
+        // Re-run `dotnet run -- policy-bench` before changing this.
         var runner = new BestOfKRunner
         {
             DeckName = $"{CharacterId} ({label})",
@@ -162,6 +170,11 @@ internal sealed class SimJob
         worstSeedBest = s.WorstSeedBest,
         winnableSeeds = s.WinnableSeeds,
         winRate = s.WinnableSeeds is int w && s.PerSeedBests.Count > 0 ? (double?)w / s.PerSeedBests.Count : null,
+        // Which personality's line won how many seeds, e.g. "race 62% · thr15 28% · turtle 10%".
+        personalities = s.PersonalityWins?
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => new { name = ShortPersonality(kv.Key), seeds = kv.Value })
+            .ToList(),
         totalRuns = s.TotalRuns,
         elapsedSec = s.Elapsed.TotalSeconds,
         medianConvergenceK = s.MedianConvergenceK,
@@ -171,6 +184,13 @@ internal sealed class SimJob
     /// <summary>Fraction of seeds whose best outcome was a win; null in dummy mode.</summary>
     private static double? WinRate(BestOfKRunner.Summary s)
         => s.WinnableSeeds is int w && s.PerSeedBests.Count > 0 ? (double?)w / s.PerSeedBests.Count : null;
+
+    /// <summary>"eps0.30-thr15" → "thr15" for display.</summary>
+    private static string ShortPersonality(string name)
+    {
+        var idx = name.LastIndexOf('-');
+        return idx >= 0 ? name[(idx + 1)..] : name;
+    }
 
     /// <summary>Paired stats between two per-seed best series (B − A).</summary>
     private static (double Lift, double StdErr, double Z, int N) PairedDiff(

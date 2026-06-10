@@ -26,6 +26,14 @@ internal sealed class BestOfKRunner
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public Type CharacterType { get; init; } = typeof(MegaCrit.Sts2.Core.Models.Characters.Ironclad);
     public IPlayPolicy Policy { get; init; } = new RandomPolicy();
+    /// <summary>
+    /// When set, the K samples per seed round-robin across these policies
+    /// instead of all using <see cref="Policy"/> — a portfolio of play
+    /// personalities (race / thr15 / thr50 / turtle). Max-over-K then picks
+    /// whichever personality's line worked best for each seed, and the
+    /// Summary reports which personality won how many seeds.
+    /// </summary>
+    public IReadOnlyList<IPlayPolicy>? Portfolio { get; init; }
     /// <summary>Null = dummy damage mode. Otherwise a full fight vs this encounter.</summary>
     public string? EncounterId { get; init; }
     /// <summary>Dummy mode: turns per trial. Encounter mode: the turn cap (reaching it = loss).</summary>
@@ -74,7 +82,7 @@ internal sealed class BestOfKRunner
         long TotalRuns,
         TimeSpan Elapsed);
 
-    private async Task<TrialOutcome> RunTrial(uint shuffleSeed, uint policySeed)
+    private async Task<TrialOutcome> RunTrial(uint shuffleSeed, uint policySeed, IPlayPolicy policy)
     {
         if (EncounterId == null)
         {
@@ -86,7 +94,7 @@ internal sealed class BestOfKRunner
                 CharacterType = CharacterType,
                 Turns = Turns,
                 HandSize = HandSize,
-                Policy = Policy,
+                Policy = policy,
                 PolicyRngSeed = policySeed,
             };
             var r = await sim.RunSingleTrial(shuffleSeed);
@@ -102,7 +110,7 @@ internal sealed class BestOfKRunner
                 CharacterType = CharacterType,
                 MaxTurns = Turns,
                 HandSize = HandSize,
-                Policy = Policy,
+                Policy = policy,
                 PolicyRngSeed = policySeed,
             };
             var r = await sim.RunSingleTrial(shuffleSeed);
@@ -125,25 +133,34 @@ internal sealed class BestOfKRunner
         double runningSum = 0, runningSumSq = 0;
         int runningMax = int.MinValue;
         int winnableSeeds = 0;
+        var personalityWins = Portfolio == null ? null : new Dictionary<string, int>();
 
-        if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={Policy.Name} | seeds={Seeds} × K={InnerSamples}{(EncounterId != null ? $" | vs {EncounterId}" : "")} ===");
+        var policyLabel = Portfolio != null
+            ? "portfolio[" + string.Join(",", Portfolio.Select(p => p.Name)) + "]"
+            : Policy.Name;
+        if (!Quiet) Console.WriteLine($"\n=== Best-of-K: {DeckName} | policy={policyLabel} | seeds={Seeds} × K={InnerSamples}{(EncounterId != null ? $" | vs {EncounterId}" : "")} ===");
 
         for (int s = 0; s < Seeds; s++)
         {
             var shuffleSeed = unchecked((uint)(s * 0x9E3779B1u + 0xC0FFEEu));
             int seedBest = int.MinValue;
             bool? seedBestWin = null;
+            string? seedBestPolicy = null;
             int firstFoundAt = 0;
 
             for (int k = 0; k < InnerSamples; k++)
             {
+                // Round-robin through the portfolio so every personality gets
+                // sampled even when Patience cuts the loop short.
+                var policy = Portfolio != null ? Portfolio[k % Portfolio.Count] : Policy;
                 var policySeed = unchecked((uint)((s * 1024 + k) * 0x85EBCA77u + 0xBADCAFEu));
-                var result = await RunTrial(shuffleSeed, policySeed);
+                var result = await RunTrial(shuffleSeed, policySeed, policy);
                 totalRuns++;
                 if (result.Score > seedBest)
                 {
                     seedBest = result.Score;
                     seedBestWin = result.Win;
+                    seedBestPolicy = policy.Name;
                     firstFoundAt = k + 1;
                 }
                 if (globalBest == null || result.Score > globalBest.Score)
@@ -162,6 +179,8 @@ internal sealed class BestOfKRunner
             runningSumSq += (double)seedBest * seedBest;
             if (seedBest > runningMax) runningMax = seedBest;
             if (seedBestWin == true) winnableSeeds++;
+            if (personalityWins != null && seedBestPolicy != null)
+                personalityWins[seedBestPolicy] = personalityWins.GetValueOrDefault(seedBestPolicy) + 1;
 
             if (OnSeedDone != null)
             {
@@ -201,6 +220,8 @@ internal sealed class BestOfKRunner
             Console.WriteLine($"  Avg-of-best:        {avg:F2} ± {ci95:F2}  (95% CI)");
             if (EncounterId != null)
                 Console.WriteLine($"  Winnable seeds:     {winnableSeeds}/{completed} ({(completed == 0 ? 0 : 100.0 * winnableSeeds / completed):F0}%)");
+            if (personalityWins != null && completed > 0)
+                Console.WriteLine($"  Winning lines:      {string.Join(" · ", personalityWins.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {100.0 * kv.Value / completed:F0}%"))}");
             Console.WriteLine($"  Std deviation across seeds: {stdDev:F2} (variance source: shuffle luck)");
             Console.WriteLine($"  Best/worst seed:    {best} / {worstSeedBest}");
             Console.WriteLine($"  Convergence: median seed found its best at K={medianFoundAt}, slowest at K={maxFoundAt}");
@@ -229,6 +250,7 @@ internal sealed class BestOfKRunner
             TotalRuns = totalRuns,
             PerSeedBests = bests,
             WinnableSeeds = EncounterId != null ? winnableSeeds : null,
+            PersonalityWins = personalityWins,
         };
     }
 
@@ -253,5 +275,7 @@ internal sealed class BestOfKRunner
         public required IReadOnlyList<int> PerSeedBests { get; init; }
         /// <summary>Encounter mode: seeds whose best outcome was a win. Null in dummy mode.</summary>
         public required int? WinnableSeeds { get; init; }
+        /// <summary>Portfolio mode: how many seeds each personality's line won. Null otherwise.</summary>
+        public required IReadOnlyDictionary<string, int>? PersonalityWins { get; init; }
     }
 }
