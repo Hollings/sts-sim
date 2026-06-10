@@ -93,9 +93,9 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | `SaveFileReader.cs` | Walks `%APPDATA%\SlayTheSpire2\steam\<steamid>\{,modded/}profile1\saves\current_run*.save`, picks freshest by mtime, parses player[0].deck. Pure file IO + System.Text.Json — no game state needed. |
 | `CardIdResolver.cs` | `"CARD.STRIKE_IRONCLAD"` → `typeof(StrikeIronclad)` via `ModelDb.GetByIdOrNull`. Requires `Harness.Bootstrap()` first. (Display formatting is in `CardLabels.cs`.) |
 | `Server/SimServer.cs` | `HttpListener` on :52324 with WebSocket. Routes: `GET /` (static, confined to webroot), `GET /api/deck`, `GET /api/cards`, `POST /api/sim/start` (accepts `removals`/`additions` for A/B), `POST /api/sim/stop`, `WS /ws`. One job at a time: a new start cancels and awaits the old job under `_jobGate` so events never interleave. |
-| `Server/SimJob.cs` | One end-to-end best-of-K run with progress events shaped for the UI. With `VariantDeck` set it runs baseline then variant on identical shuffle seeds and finishes with a **paired z-test** verdict (`abDone` event) — pairing cancels shuffle luck, so ~40 seeds give the discrimination the old unpaired console flow needed 500 for. Wire-shape contract: event `type` strings + field names match `www/app.js`. |
+| `Server/SimJob.cs` | One end-to-end best-of-K run with progress events shaped for the UI. With `VariantDeck` set it runs baseline then variant on identical shuffle seeds and finishes with a **paired z-test** verdict (`abDone` event) — pairing cancels shuffle luck, so ~40 seeds give the discrimination the old unpaired console flow needed 500 for. With `Candidates` set (the card-reward question) it runs baseline + one phase per candidate, ranks them by paired lift, runs a winner-vs-runner-up paired test, and emits `compareDone` with a TAKE/SKIP/toss-up verdict. Wire-shape contract: event `type` strings + field names match `www/app.js`. |
 | `AutoCardSelector.cs` | Global "auto-pick" selector for cards like Armaments / Havoc that wait on a `CardSelectCmd`. |
-| `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Deck editor (click a card to mark a copy for removal, datalist picker to add cards) drives the A/B flow. Three charts: per-seed scatter, running avg with 95% CI band, damage histogram — all dual-series in A/B mode (blue baseline / gold variant). Verdict panel renders the `abDone` paired test. Config fields persist in localStorage. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
+| `www/index.html` + `www/app.js` | Single-page UI. Plain JS + Chart.js (CDN). Deck editor (click a card to mark a copy for removal, datalist picker to add cards) drives the A/B flow; the "Compare Candidates" picker drives compare mode. Charts have dynamic per-phase datasets (1 in single mode, 2 in A/B, 1+N in compare; `PHASE_COLORS` palette, baseline always blue). Verdict panel renders the `abDone` paired test or the `compareDone` ranking table. Config fields persist in localStorage. StS2 color theme (`#183749` bg, `#f2f0c4` fg, `#8b1913` accent). |
 
 ## The algorithm we settled on
 
@@ -222,14 +222,12 @@ applies +2 Strength, next Strike does 8 (6+2).
 
 ~~Card-swap A/B UI~~ — DONE (deck editor + paired-z verdict, June 2026).
 ~~Adaptive K~~ — DONE (Patience knob, June 2026).
+~~Multi-candidate compare~~ — DONE ("which of these reward cards?" ranking, June 2026).
 
 1. **Smarter base policy**: hand-coded heuristics like "play Powers turn 1",
    "apply Vulnerable before attacking". Could shrink ε-needed and tighten CI.
-2. **Multi-swap search**: run a batch of single-card A/Bs ("which of my 3 card
-   reward options is best?") in one click — the runner already supports it,
-   needs a queue in SimJob + UI.
-3. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-2 feel slow.
-4. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
+2. **Subprocess parallelism**: ~6x throughput. Don't bother until #1 feels slow.
+3. **Phase 3**: real enemy turns. Required for any "did the player survive" question.
 
 ## UI notes (frontend)
 

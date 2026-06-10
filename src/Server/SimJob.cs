@@ -11,21 +11,35 @@ namespace StS2Sim;
 /// shaped for the web UI. Splits sim orchestration out of the HTTP layer so
 /// the server only deals with routing/transport, not the algorithm.
 ///
-/// Two modes:
+/// Three modes:
 ///  - Single: just the baseline deck. Events: started → seed* → done.
 ///  - A/B (VariantDeck set): baseline then variant on identical shuffle seeds,
 ///    finished with a paired z-test verdict. Events: started → seed*(phase=base)
 ///    → phaseDone → seed*(phase=variant) → phaseDone → abDone.
+///  - Compare (Candidates set): baseline then one phase per candidate card,
+///    every phase on identical shuffle seeds. Finishes with a ranking of all
+///    candidates by paired lift vs baseline, plus a winner-vs-runner-up paired
+///    test — the "which of these reward cards do I take?" button. Events:
+///    started → [seed* → phaseDone] per phase → compareDone.
+///
+/// All phases share the same seed derivation inside BestOfKRunner, so seed
+/// index i is the same shuffle on every side — that's what makes the paired
+/// statistics legal.
 ///
 /// The wire shapes (event "type" strings, field names) here are part of the
 /// frontend contract — see www/app.js. Don't rename without coordinating.
 /// </summary>
 internal sealed class SimJob
 {
+    /// <summary>One compare-mode candidate: baseline deck plus one card.</summary>
+    public sealed record Candidate(string Label, IReadOnlyList<Harness.DeckEntry> Deck);
+
     public required IReadOnlyList<Harness.DeckEntry> Deck { get; init; }
-    /// <summary>When set, run an A/B comparison: Deck (baseline) vs this.</summary>
+    /// <summary>When set (and Candidates empty), run an A/B comparison: Deck (baseline) vs this.</summary>
     public IReadOnlyList<Harness.DeckEntry>? VariantDeck { get; init; }
-    /// <summary>Human-readable description of the A→B change, e.g. "−Defend ×1 · +Inflame ×1".</summary>
+    /// <summary>When non-empty, run compare mode: Deck (baseline) vs each candidate.</summary>
+    public IReadOnlyList<Candidate> Candidates { get; init; } = Array.Empty<Candidate>();
+    /// <summary>Human-readable description of the common deck edit, e.g. "−Defend ×1 · +Inflame ×1".</summary>
     public string? ChangeSummary { get; init; }
     public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     public required string CharacterId { get; init; }
@@ -38,15 +52,20 @@ internal sealed class SimJob
     /// <summary>Adaptive early-stop patience for the inner K loop; 0 = fixed K.</summary>
     public int Patience { get; init; } = 0;
 
+    private bool IsCompare => Candidates.Count > 0;
+    private bool IsAb => !IsCompare && VariantDeck != null;
+    private bool IsMultiPhase => IsCompare || IsAb;
+
     public async Task Run(CancellationToken ct)
     {
-        bool abTest = VariantDeck != null;
         await BroadcastEvent(new
         {
             type = "started",
+            mode = IsCompare ? "compare" : IsAb ? "ab" : "single",
             deckSize = Deck.Count,
             variantDeckSize = VariantDeck?.Count,
-            abTest,
+            abTest = IsAb, // legacy field, kept for wire compat
+            candidates = Candidates.Select(c => c.Label).ToList(),
             changeSummary = ChangeSummary,
             character = CharacterId,
             seeds = Seeds,
@@ -61,19 +80,31 @@ internal sealed class SimJob
             var characterType = Harness.ResolveCharacterType(CharacterId)
                 ?? typeof(MegaCrit.Sts2.Core.Models.Characters.Ironclad);
 
-            var baseSummary = await RunPhase("base", Deck, characterType, ct);
+            var baseSummary = await RunPhase("base", "current deck", Deck, characterType, ct);
             ct.ThrowIfCancellationRequested();
 
-            if (!abTest)
+            if (IsCompare)
             {
-                await BroadcastEvent(DoneEvent("done", "base", baseSummary));
-                return;
+                var candSummaries = new List<(Candidate Cand, BestOfKRunner.Summary Summary)>();
+                for (int i = 0; i < Candidates.Count; i++)
+                {
+                    var cand = Candidates[i];
+                    var summary = await RunPhase($"cand{i}", cand.Label, cand.Deck, characterType, ct);
+                    ct.ThrowIfCancellationRequested();
+                    candSummaries.Add((cand, summary));
+                }
+                await BroadcastEvent(BuildCompareVerdict(baseSummary, candSummaries));
             }
-
-            var variantSummary = await RunPhase("variant", VariantDeck!, characterType, ct);
-            ct.ThrowIfCancellationRequested();
-
-            await BroadcastEvent(BuildAbVerdict(baseSummary, variantSummary));
+            else if (IsAb)
+            {
+                var variantSummary = await RunPhase("variant", "variant deck", VariantDeck!, characterType, ct);
+                ct.ThrowIfCancellationRequested();
+                await BroadcastEvent(BuildAbVerdict(baseSummary, variantSummary));
+            }
+            else
+            {
+                await BroadcastEvent(DoneEvent("done", "base", "current deck", baseSummary));
+            }
         }
         catch (OperationCanceledException)
         {
@@ -87,11 +118,11 @@ internal sealed class SimJob
     }
 
     private async Task<BestOfKRunner.Summary> RunPhase(
-        string phase, IReadOnlyList<Harness.DeckEntry> deck, Type characterType, CancellationToken ct)
+        string phase, string label, IReadOnlyList<Harness.DeckEntry> deck, Type characterType, CancellationToken ct)
     {
         var runner = new BestOfKRunner
         {
-            DeckName = $"{CharacterId} ({phase})",
+            DeckName = $"{CharacterId} ({label})",
             Deck = deck,
             Relics = Relics,
             CharacterType = characterType,
@@ -105,18 +136,19 @@ internal sealed class SimJob
             Quiet = true,
             Cancellation = ct,
             OnSeedDone = p => OnSeedDone(phase, p),
-            OnNewBest = t => OnNewBest(phase, t),
+            OnNewBest = t => OnNewBest(phase, label, t),
         };
         var summary = await runner.Run();
-        if (!ct.IsCancellationRequested && VariantDeck != null)
-            await BroadcastEvent(DoneEvent("phaseDone", phase, summary));
+        if (!ct.IsCancellationRequested && IsMultiPhase)
+            await BroadcastEvent(DoneEvent("phaseDone", phase, label, summary));
         return summary;
     }
 
-    private object DoneEvent(string type, string phase, BestOfKRunner.Summary s) => new
+    private object DoneEvent(string type, string phase, string label, BestOfKRunner.Summary s) => new
     {
         type,
         phase,
+        label,
         avgOfBest = s.AvgOfBest,
         avgPerTurn = Turns == 0 ? 0 : s.AvgOfBest / Turns,
         ci95 = s.Ci95HalfWidth,
@@ -128,6 +160,21 @@ internal sealed class SimJob
         maxConvergenceK = s.MaxConvergenceK,
     };
 
+    /// <summary>Paired stats between two per-seed best series (B − A).</summary>
+    private static (double Lift, double StdErr, double Z, int N) PairedDiff(
+        IReadOnlyList<int> a, IReadOnlyList<int> b)
+    {
+        int n = Math.Min(a.Count, b.Count);
+        if (n == 0) return (0, 0, 0, 0);
+        var diffs = new double[n];
+        for (int i = 0; i < n; i++) diffs[i] = b[i] - a[i];
+        double mean = diffs.Average();
+        double variance = n <= 1 ? 0 : diffs.Sum(d => (d - mean) * (d - mean)) / (n - 1);
+        double stdErr = Math.Sqrt(variance) / Math.Sqrt(n);
+        double z = stdErr > 0 ? mean / stdErr : 0;
+        return (mean, stdErr, z, n);
+    }
+
     /// <summary>
     /// Paired z-test on per-seed bests. Seed index i used the same shuffle seed
     /// in both phases, so differencing cancels most shuffle luck — far tighter
@@ -135,15 +182,7 @@ internal sealed class SimJob
     /// </summary>
     private object BuildAbVerdict(BestOfKRunner.Summary baseS, BestOfKRunner.Summary varS)
     {
-        int n = Math.Min(baseS.PerSeedBests.Count, varS.PerSeedBests.Count);
-        var diffs = new double[n];
-        for (int i = 0; i < n; i++)
-            diffs[i] = varS.PerSeedBests[i] - baseS.PerSeedBests[i];
-
-        double mean = n == 0 ? 0 : diffs.Average();
-        double variance = n <= 1 ? 0 : diffs.Sum(d => (d - mean) * (d - mean)) / (n - 1);
-        double stdErr = n == 0 ? 0 : Math.Sqrt(variance) / Math.Sqrt(n);
-        double z = stdErr > 0 ? mean / stdErr : 0;
+        var (lift, stdErr, z, n) = PairedDiff(baseS.PerSeedBests, varS.PerSeedBests);
         double ci95 = 1.96 * stdErr;
 
         var (verdict, verdictClass) = z switch
@@ -163,15 +202,109 @@ internal sealed class SimJob
             baseCi95 = baseS.Ci95HalfWidth,
             variantAvg = varS.AvgOfBest,
             variantCi95 = varS.Ci95HalfWidth,
-            lift = mean,
+            lift,
             liftCi95 = ci95,
-            liftPerTurn = Turns == 0 ? 0 : mean / Turns,
+            liftPerTurn = Turns == 0 ? 0 : lift / Turns,
             z,
             pairedSeeds = n,
             verdict,
             verdictClass,
             totalRuns = baseS.TotalRuns + varS.TotalRuns,
             elapsedSec = baseS.Elapsed.TotalSeconds + varS.Elapsed.TotalSeconds,
+        };
+    }
+
+    /// <summary>
+    /// Rank every candidate by paired lift vs baseline, then ask the question
+    /// that actually matters at a card reward: is the winner's edge over the
+    /// runner-up real, and does anything beat skipping at all?
+    /// </summary>
+    private object BuildCompareVerdict(
+        BestOfKRunner.Summary baseS,
+        IReadOnlyList<(Candidate Cand, BestOfKRunner.Summary Summary)> cands)
+    {
+        var results = cands.Select((c, i) =>
+        {
+            var (lift, stdErr, z, _) = PairedDiff(baseS.PerSeedBests, c.Summary.PerSeedBests);
+            return new
+            {
+                phase = $"cand{i}",
+                label = c.Cand.Label,
+                avg = c.Summary.AvgOfBest,
+                ci95 = c.Summary.Ci95HalfWidth,
+                lift,
+                liftCi95 = 1.96 * stdErr,
+                liftPerTurn = Turns == 0 ? 0 : lift / Turns,
+                z,
+                beatsBase = z > 1.96,
+                summary = c.Summary,
+            };
+        })
+        .OrderByDescending(r => r.lift)
+        .ToList();
+
+        var winner = results[0];
+        object? winnerVsRunnerUp = null;
+        double wvrZ = double.PositiveInfinity; // single candidate: no runner-up to beat
+        if (results.Count > 1)
+        {
+            var runnerUp = results[1];
+            var (lift, stdErr, z, _) = PairedDiff(runnerUp.summary.PerSeedBests, winner.summary.PerSeedBests);
+            wvrZ = z;
+            winnerVsRunnerUp = new
+            {
+                winnerLabel = winner.label,
+                runnerUpLabel = runnerUp.label,
+                lift,
+                liftCi95 = 1.96 * stdErr,
+                z,
+            };
+        }
+
+        string verdict;
+        string verdictClass;
+        if (winner.beatsBase && wvrZ > 1.96)
+        {
+            verdict = $"TAKE {winner.label.ToUpperInvariant()} — beats your current deck"
+                + (results.Count > 1 ? " and clearly beats the other option(s)" : "");
+            verdictClass = "good";
+        }
+        else if (winner.beatsBase)
+        {
+            var alsoGood = results.Skip(1).Where(r => r.beatsBase).Select(r => r.label).ToList();
+            verdict = alsoGood.Count > 0
+                ? $"TAKE {winner.label.ToUpperInvariant()} or {string.Join(" / ", alsoGood)} — all beat skipping, too close to call between them"
+                : $"TAKE {winner.label.ToUpperInvariant()} — best of the bunch, though its edge over the runner-up isn't decisive";
+            verdictClass = "good";
+        }
+        else if (results.All(r => r.z < -1.96))
+        {
+            verdict = "SKIP — every candidate makes the deck worse";
+            verdictClass = "bad";
+        }
+        else
+        {
+            verdict = "INCONCLUSIVE — no candidate clearly beats your current deck; run more seeds or the choice genuinely doesn't matter much";
+            verdictClass = "neutral";
+        }
+
+        return new
+        {
+            type = "compareDone",
+            changeSummary = ChangeSummary,
+            baseAvg = baseS.AvgOfBest,
+            baseCi95 = baseS.Ci95HalfWidth,
+            results = results.Select(r => new
+            {
+                r.phase, r.label, r.avg, r.ci95, r.lift, r.liftCi95, r.liftPerTurn, r.z, r.beatsBase,
+            }).ToList(),
+            winnerLabel = winner.label,
+            winnerVsRunnerUp,
+            verdict,
+            verdictClass,
+            pairedSeeds = Math.Min(baseS.PerSeedBests.Count, cands.Min(c => c.Summary.PerSeedBests.Count)),
+            totalRuns = baseS.TotalRuns + cands.Sum(c => c.Summary.TotalRuns),
+            elapsedSec = baseS.Elapsed.TotalSeconds + cands.Sum(c => c.Summary.Elapsed.TotalSeconds),
         };
     }
 
@@ -189,10 +322,11 @@ internal sealed class SimJob
         elapsedMs = (long)p.Elapsed.TotalMilliseconds,
     });
 
-    private void OnNewBest(string phase, DamagePerTurnSim.TrialResult trial) => _ = BroadcastEvent(new
+    private void OnNewBest(string phase, string label, DamagePerTurnSim.TrialResult trial) => _ = BroadcastEvent(new
     {
         type = "newBest",
         phase,
+        label,
         seed = trial.Seed,
         totalDamage = trial.TotalDamage,
         avgPerTurn = trial.AvgPerTurn,

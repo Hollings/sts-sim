@@ -12,7 +12,8 @@ dotnet run -c Release -p:STS2GameDir="C:\Program Files (x86)\Steam\steamapps\com
 Default mode starts the embedded web UI on `http://localhost:52324` and opens the browser. It reads your freshest `current_run.save`, shows the deck, and lets you:
 
 - run a best-of-K damage sim with live charts (per-seed scatter, running average ± CI, histogram),
-- click cards to mark removals and pick cards to add, then run an **A/B comparison** — baseline vs edited deck on identical shuffle seeds with a paired z-test verdict ("ADD IT / DON'T / INCONCLUSIVE").
+- click cards to mark removals and pick cards to add, then run an **A/B comparison** — baseline vs edited deck on identical shuffle seeds with a paired z-test verdict ("ADD IT / DON'T / INCONCLUSIVE"),
+- or answer the card-reward question directly: add 2–4 **compare candidates** and get a ranked table — each candidate tested as +1 card on identical shuffles, paired lift vs skipping, plus a winner-vs-runner-up significance test ("TAKE BLUDGEON — beats your current deck and clearly beats the other options").
 
 Other modes:
 

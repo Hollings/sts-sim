@@ -220,18 +220,39 @@ internal sealed class SimServer
 
         List<Harness.DeckEntry> baseEntries;
         List<Harness.DeckEntry>? variantEntries = null;
+        List<SimJob.Candidate> candidates = new();
         string? changeSummary = null;
         try
         {
-            baseEntries = ResolveEntries(deck.Cards);
-
             var removals = req.Removals ?? new List<CardChange>();
             var additions = req.Additions ?? new List<CardChange>();
+            var candidateReqs = req.Candidates ?? new List<CardChange>();
+            if (candidateReqs.Count > 8)
+                throw new ArgumentException("At most 8 candidates per compare run");
+
+            // Staged edits are a COMMON change applied to every side. With
+            // candidates present they shift the baseline itself ("after I
+            // remove this Strike, which reward is best?"); without candidates
+            // they define the A/B variant against the untouched save deck.
+            var baseCards = deck.Cards.ToList();
             if (removals.Count > 0 || additions.Count > 0)
             {
-                var variantCards = ApplyChanges(deck.Cards, removals, additions);
-                variantEntries = ResolveEntries(variantCards);
                 changeSummary = DescribeChanges(removals, additions);
+                if (candidateReqs.Count > 0)
+                    baseCards = ApplyChanges(deck.Cards, removals, additions);
+                else
+                    variantEntries = ResolveEntries(ApplyChanges(deck.Cards, removals, additions));
+            }
+            baseEntries = ResolveEntries(baseCards);
+
+            foreach (var cand in candidateReqs)
+            {
+                if (CardIdResolver.Resolve(cand.Id) == null)
+                    throw new ArgumentException($"Unknown candidate card id '{cand.Id}'");
+                var candCards = baseCards.ToList();
+                candCards.Add(new SaveFileReader.DeckCard(cand.Id, FloorAdded: 0, UpgradeLevel: cand.Upgrade));
+                candidates.Add(new SimJob.Candidate(
+                    CardLabels.Format(cand.Id, cand.Upgrade), ResolveEntries(candCards)));
             }
         }
         catch (Exception ex)
@@ -258,6 +279,7 @@ internal sealed class SimServer
             {
                 Deck = baseEntries,
                 VariantDeck = variantEntries,
+                Candidates = candidates,
                 ChangeSummary = changeSummary,
                 Relics = deck.Relics.Where(r => !string.IsNullOrEmpty(r)).ToList(),
                 CharacterId = deck.CharacterId,
@@ -425,10 +447,12 @@ internal sealed class SimServer
         public double Epsilon { get; set; } = 0.30;
         /// <summary>Adaptive early-stop patience; 0 disables.</summary>
         public int Patience { get; set; } = 0;
-        /// <summary>Cards to remove from the save deck (A/B variant).</summary>
+        /// <summary>Cards to remove from the save deck (A/B variant / common edit).</summary>
         public List<CardChange>? Removals { get; set; }
-        /// <summary>Cards to add to the save deck (A/B variant).</summary>
+        /// <summary>Cards to add to the save deck (A/B variant / common edit).</summary>
         public List<CardChange>? Additions { get; set; }
+        /// <summary>Compare mode: each entry is tested as baseline + that one card.</summary>
+        public List<CardChange>? Candidates { get; set; }
     }
 
     private sealed class CardChange

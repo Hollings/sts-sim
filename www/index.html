@@ -55,6 +55,8 @@
   .changes-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding: 6px 8px; background: rgba(212,161,66,0.12); border: 1px solid var(--accent-2); border-radius: 3px; font-size: 12px; }
   .changes-bar .clear { color: var(--bad); cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; font: inherit; text-transform: none; letter-spacing: 0; font-size: 12px; }
   .changes-bar.hidden { display: none; }
+  ul.cards li.cand { color: var(--accent-2); cursor: pointer; }
+  ul.cards li.cand .cand-vs { color: var(--fg-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 
   /* ─── Sim config form ───────────────────────────────────── */
   .config { background: var(--bg-2); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
@@ -96,6 +98,18 @@
   .ab-panel .ab-detail div { background: var(--bg); padding: 6px 10px; border-radius: 3px; }
   .ab-panel .ab-detail .label { display: block; color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
   .ab-panel .ab-detail .value { font-variant-numeric: tabular-nums; font-weight: bold; }
+
+  /* ─── Compare-mode ranking table ────────────────────────── */
+  .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rank-table th { text-align: left; color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+  .rank-table td { padding: 6px 10px; border-bottom: 1px dotted var(--border); }
+  .rank-table tr.winner td { background: rgba(95,176,79,0.12); font-weight: bold; }
+  .rank-table tr.skip-row td { color: var(--fg-dim); }
+  .rank-table .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: baseline; }
+  .rank-table .chip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px; border-radius: 3px; background: var(--border); color: var(--fg-dim); white-space: nowrap; }
+  .rank-table .chip.good { background: rgba(95,176,79,0.25); color: var(--good); }
+  .rank-table .chip.bad { background: rgba(199,84,80,0.25); color: var(--bad); }
+  .ab-panel .wvr { margin-top: 8px; font-size: 12px; color: var(--fg-dim); }
 
   /* ─── Charts ────────────────────────────────────────────── */
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -149,6 +163,15 @@
       <span id="changes-text"></span>
       <button class="clear" id="changes-clear">clear</button>
     </div>
+
+    <h2>Compare Candidates</h2>
+    <div class="hint">Picking a card reward? Add 2–4 cards — each is tested as +1 copy on top of your deck (plus any staged edits above) on identical shuffles, then ranked against skipping.</div>
+    <div class="add-card-row">
+      <input id="cand-input" type="text" list="card-options" placeholder="Add a candidate…" autocomplete="off">
+      <label><input id="cand-upgraded" type="checkbox">+</label>
+      <button id="cand-add-btn" class="stop" title="Add this card as a compare candidate">＋</button>
+    </div>
+    <ul class="cards" id="cand-list"></ul>
 
     <h2>Relics</h2>
     <ul class="cards" id="relics"></ul>

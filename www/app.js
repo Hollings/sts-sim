@@ -1,12 +1,14 @@
 // StS2 Sim — single-file frontend.
 // Loads the current run's deck from the embedded server, lets you mark card
-// removals/additions for an A/B test, kicks off sim batches, and live-streams
-// progress over WebSocket while drawing charts.
+// removals/additions (A/B test) or pick reward candidates (compare mode),
+// kicks off sim batches, and live-streams progress over WebSocket while
+// drawing charts. Phases are dynamic: 1 (single), 2 (A/B), or 1+N (compare).
 
 // ─── Tiny utilities ──────────────────────────────────────────────────────
 
 const $ = id => document.getElementById(id);
 const fmt = n => Number.isFinite(n) ? n.toFixed(2) : '—';
+const sgn = n => (n >= 0 ? '+' : '');
 
 const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
@@ -30,8 +32,8 @@ function damageColor(y, min, max) {
   return `rgb(${lerp(0xd4, 0x5f, u)},${lerp(0xa1, 0xb0, u)},${lerp(0x42, 0x4f, u)})`;
 }
 
-const BASE_COLOR = '#6da4c4';      // baseline series (muted blue)
-const VARIANT_COLOR = '#d4a142';   // variant series (gold)
+// Baseline is always slot 0 (muted blue); candidates/variant take the rest.
+const PHASE_COLORS = ['#6da4c4', '#d4a142', '#5fb04f', '#c75450', '#9d7bd8', '#e0884f', '#5fc4b8', '#c45f9e'];
 
 // ─── DOM helpers (UI state mutations are repeated everywhere) ────────────
 
@@ -51,16 +53,14 @@ const statTile = (label, value) =>
 
 const renderStats = tiles => { $('stats').innerHTML = tiles.join(''); };
 
-// ─── Charts ──────────────────────────────────────────────────────────────
+// ─── Charts (dynamic per-phase datasets) ─────────────────────────────────
 
 let bestChart, avgChart, histChart;
-let abMode = false;
-// Per-phase series. Single-run mode only fills `base`.
-const series = {
-  base:    { best: [], avg: [], ciUpper: [], ciLower: [] },
-  variant: { best: [], avg: [], ciUpper: [], ciLower: [] },
-};
-let runningMean = null;        // for the horizontal reference line
+let mode = 'single';            // 'single' | 'ab' | 'compare'
+let phaseDefs = [];             // [{key, label, color}] — index 0 is baseline
+let phaseIndexByKey = {};
+const seriesByPhase = new Map(); // key -> {best, avg, ciUpper, ciLower}
+let runningMean = null;          // single mode: horizontal reference line
 
 function initCharts() {
   Chart.defaults.color = '#f2f0c4';
@@ -90,12 +90,11 @@ function initCharts() {
     },
   };
 
+  const legendOpts = { display: false, labels: { boxWidth: 10, boxHeight: 10, font: { size: 11 } } };
+
   bestChart = new Chart($('chart-best'), {
     type: 'scatter',
-    data: { datasets: [
-      { label: 'baseline', data: [], pointBackgroundColor: [], pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7 },
-      { label: 'variant', data: [], pointBackgroundColor: VARIANT_COLOR, pointBorderColor: '#0f2733', pointBorderWidth: 1, radius: 5, hoverRadius: 7, pointStyle: 'triangle' },
-    ]},
+    data: { datasets: [] },
     options: {
       animation: false,
       maintainAspectRatio: false,
@@ -104,7 +103,7 @@ function initCharts() {
         y: { title: { display: true, text: 'best damage' }, beginAtZero: false, grace: '5%' },
       },
       plugins: {
-        legend: { display: false },
+        legend: { ...legendOpts },
         tooltip: { callbacks: { label: c => `${c.dataset.label} seed ${c.parsed.x}: ${c.parsed.y} dmg` } },
       },
     },
@@ -112,15 +111,10 @@ function initCharts() {
   });
 
   avgChart = new Chart($('chart-avg'), {
-    // scatter with line: keeps x-axis numeric (line type defaults to category, which
-    // squashes everything to the left as new points come in).
+    // scatter with showLine: keeps x-axis numeric (line type defaults to category,
+    // which squashes everything to the left as new points come in).
     type: 'scatter',
-    data: { datasets: [
-      { label: 'CI upper', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(212,161,66,0.12)', pointRadius: 0, showLine: true },
-      { label: 'CI lower', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: false, pointRadius: 0, showLine: true },
-      { label: 'baseline', data: [], borderColor: BASE_COLOR, borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
-      { label: 'variant', data: [], borderColor: VARIANT_COLOR, borderWidth: 2, fill: false, pointRadius: 0, showLine: true, tension: 0.15 },
-    ]},
+    data: { datasets: [] },
     options: {
       animation: false,
       maintainAspectRatio: false,
@@ -128,16 +122,13 @@ function initCharts() {
         x: { title: { display: true, text: 'seed index' }, ticks: { precision: 0 } },
         y: { title: { display: true, text: 'avg-of-best damage' }, beginAtZero: false, grace: '5%' },
       },
-      plugins: { legend: { display: false } },
+      plugins: { legend: { ...legendOpts } },
     },
   });
 
   histChart = new Chart($('chart-hist'), {
     type: 'bar',
-    data: { labels: [], datasets: [
-      { label: 'baseline', data: [], backgroundColor: [] },
-      { label: 'variant', data: [], backgroundColor: VARIANT_COLOR + 'cc' },
-    ]},
+    data: { labels: [], datasets: [] },
     options: {
       animation: false,
       maintainAspectRatio: false,
@@ -145,42 +136,82 @@ function initCharts() {
         x: { title: { display: true, text: 'damage bucket (per-seed best)' }, grid: { display: false } },
         y: { title: { display: true, text: 'seeds' }, beginAtZero: true, ticks: { precision: 0 } },
       },
-      plugins: { legend: { display: false } },
+      plugins: { legend: { ...legendOpts } },
     },
   });
+
+  configurePhases('single', [{ key: 'base', label: 'current deck' }]);
+}
+
+// Rebuild every chart's datasets for a new phase layout. Called on `started`.
+function configurePhases(newMode, defs) {
+  mode = newMode;
+  phaseDefs = defs.map((d, i) => ({ ...d, color: PHASE_COLORS[i % PHASE_COLORS.length] }));
+  phaseIndexByKey = Object.fromEntries(phaseDefs.map((d, i) => [d.key, i]));
+  seriesByPhase.clear();
+  for (const d of phaseDefs)
+    seriesByPhase.set(d.key, { best: [], avg: [], ciUpper: [], ciLower: [] });
+  runningMean = null;
+
+  const multi = phaseDefs.length > 1;
+
+  bestChart.data.datasets = phaseDefs.map((d, i) => ({
+    label: d.label, data: [],
+    pointBackgroundColor: d.color, pointBorderColor: '#0f2733', pointBorderWidth: 1,
+    radius: multi ? 4 : 5, hoverRadius: 7,
+    pointStyle: i === 0 ? 'circle' : 'triangle',
+  }));
+  bestChart.options.plugins.legend.display = multi;
+
+  // CI band datasets first (only drawn in single mode), then one line per phase.
+  avgChart.data.datasets = [
+    { label: 'CI upper', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(212,161,66,0.12)', pointRadius: 0, showLine: true },
+    { label: 'CI lower', data: [], borderColor: 'rgba(212,161,66,0.4)', borderWidth: 1, fill: false, pointRadius: 0, showLine: true },
+    ...phaseDefs.map(d => ({
+      label: d.label, data: [], borderColor: d.color, borderWidth: 2,
+      fill: false, pointRadius: 0, showLine: true, tension: 0.15,
+    })),
+  ];
+  avgChart.options.plugins.legend.display = multi;
+  avgChart.options.plugins.legend.labels.filter = item => item.text !== 'CI upper' && item.text !== 'CI lower';
+
+  histChart.data.labels = [];
+  histChart.data.datasets = phaseDefs.map(d => ({ label: d.label, data: [], backgroundColor: d.color + 'cc' }));
+  histChart.options.plugins.legend.display = multi;
+
+  bestChart.update('none'); avgChart.update('none'); histChart.update('none');
 }
 
 function updateCharts() {
-  const baseYs = series.base.best.map(p => p.y);
-  const varYs = series.variant.best.map(p => p.y);
-  const allYs = baseYs.concat(varYs);
+  const single = phaseDefs.length === 1;
+  const allYs = phaseDefs.flatMap(d => seriesByPhase.get(d.key).best.map(p => p.y));
   const [min, max] = allYs.length ? minMax(allYs) : [0, 0];
 
-  // Per-seed scatter. Single mode: gradient-colored dots. A/B mode: solid
-  // per-phase colors so the two clouds are distinguishable.
-  bestChart.data.datasets[0].data = series.base.best;
-  bestChart.data.datasets[0].pointBackgroundColor = abMode
-    ? BASE_COLOR
-    : series.base.best.map(p => damageColor(p.y, min, max));
-  bestChart.data.datasets[1].data = series.variant.best;
+  phaseDefs.forEach((d, i) => {
+    const s = seriesByPhase.get(d.key);
+    bestChart.data.datasets[i].data = s.best;
+    // Single mode keeps the damage-gradient dots; multi-phase uses solid
+    // per-phase colors so the clouds are distinguishable.
+    bestChart.data.datasets[i].pointBackgroundColor = single
+      ? s.best.map(p => damageColor(p.y, min, max))
+      : d.color;
+    avgChart.data.datasets[2 + i].data = s.avg;
+  });
+  const baseSeries = seriesByPhase.get(phaseDefs[0].key);
+  avgChart.data.datasets[0].data = single ? baseSeries.ciUpper : [];
+  avgChart.data.datasets[1].data = single ? baseSeries.ciLower : [];
   bestChart.update('none');
-
-  avgChart.data.datasets[0].data = abMode ? [] : series.base.ciUpper;
-  avgChart.data.datasets[1].data = abMode ? [] : series.base.ciLower;
-  avgChart.data.datasets[2].data = series.base.avg;
-  avgChart.data.datasets[3].data = series.variant.avg;
   avgChart.update('none');
 
-  // Histogram with ~12 shared buckets. A/B mode shows the two distributions
-  // side by side; single mode keeps the damage-gradient coloring.
+  // Histogram: shared buckets across all phases so the bars line up.
   if (allYs.length > 1 && max > min) {
     const buckets = 12;
     const w = (max - min) / buckets;
     const labels = [];
-    const colors = [];
+    const gradientColors = [];
     for (let i = 0; i < buckets; i++) {
       labels.push(`${Math.round(min + i * w)}`);
-      colors.push(damageColor(min + (i + 0.5) * w, min, max));
+      gradientColors.push(damageColor(min + (i + 0.5) * w, min, max));
     }
     const countUp = ys => {
       const counts = new Array(buckets).fill(0);
@@ -188,24 +219,13 @@ function updateCharts() {
       return counts;
     };
     histChart.data.labels = labels;
-    histChart.data.datasets[0].data = countUp(baseYs);
-    histChart.data.datasets[0].backgroundColor = abMode ? BASE_COLOR + 'cc' : colors;
-    histChart.data.datasets[1].data = abMode ? countUp(varYs) : [];
+    phaseDefs.forEach((d, i) => {
+      const ys = seriesByPhase.get(d.key).best.map(p => p.y);
+      histChart.data.datasets[i].data = countUp(ys);
+      histChart.data.datasets[i].backgroundColor = single ? gradientColors : d.color + 'cc';
+    });
     histChart.update('none');
   }
-}
-
-function resetCharts() {
-  for (const phase of Object.values(series)) {
-    phase.best = []; phase.avg = []; phase.ciUpper = []; phase.ciLower = [];
-  }
-  runningMean = null;
-  bestChart.data.datasets.forEach(ds => { ds.data = []; });
-  bestChart.data.datasets[0].pointBackgroundColor = [];
-  avgChart.data.datasets.forEach(ds => { ds.data = []; });
-  histChart.data.labels = [];
-  histChart.data.datasets.forEach(ds => { ds.data = []; });
-  bestChart.update('none'); avgChart.update('none'); histChart.update('none');
 }
 
 // Coalesce chart redraws into a single rAF tick — Chart.js updates are
@@ -223,10 +243,11 @@ requestAnimationFrame(tick);
 // ─── Deck editor state ───────────────────────────────────────────────────
 
 let deckData = null;          // last /api/deck payload
-let cardCatalog = [];         // /api/cards entries for the picker
+let cardCatalog = [];         // /api/cards entries for the pickers
 // Pending A/B changes. Keys are `${id}|${upgrade}`.
 const removals = new Map();   // key -> count to remove
 let additions = [];           // [{ id, upgrade, count, name }]
+let candidates = [];          // compare mode: [{ id, upgrade, name }]
 
 const changeKey = (id, upgrade) => `${id}|${upgrade}`;
 
@@ -235,6 +256,7 @@ function hasChanges() { return removals.size > 0 || additions.length > 0; }
 function clearChanges() {
   removals.clear();
   additions = [];
+  candidates = [];
   renderDeckEditor();
 }
 
@@ -245,6 +267,7 @@ function changesPayload() {
       return { id, upgrade: +upgrade, count };
     }),
     additions: additions.map(a => ({ id: a.id, upgrade: a.upgrade, count: a.count })),
+    candidates: candidates.map(c => ({ id: c.id, upgrade: c.upgrade })),
   };
 }
 
@@ -258,6 +281,13 @@ function describeChanges() {
   for (const a of additions)
     parts.push(`+${a.name}${a.count > 1 ? ` ×${a.count}` : ''}`);
   return parts.join(' · ');
+}
+
+function lookupCatalogEntry(name) {
+  const q = name.trim().toLowerCase();
+  if (!q) return null;
+  return cardCatalog.find(c => c.name.toLowerCase() === q)
+      || cardCatalog.find(c => c.name.toLowerCase().startsWith(q));
 }
 
 function renderDeckEditor() {
@@ -279,11 +309,17 @@ function renderDeckEditor() {
   if (hasChanges()) {
     bar.classList.remove('hidden');
     $('changes-text').textContent = describeChanges();
-    $('run-btn').textContent = 'Run A/B Sim';
   } else {
     bar.classList.add('hidden');
-    $('run-btn').textContent = 'Run Sim';
   }
+
+  $('cand-list').innerHTML = candidates.map((c, i) =>
+    `<li class="editable cand" data-cand="${i}" title="Click to remove">
+      <span>${escapeHtml(c.name)}</span><span class="cand-vs">vs</span></li>`).join('');
+
+  $('run-btn').textContent = candidates.length > 0
+    ? `Compare ${candidates.length} Card${candidates.length > 1 ? 's' : ''}`
+    : hasChanges() ? 'Run A/B Sim' : 'Run Sim';
 }
 
 $('deck-cards').addEventListener('click', ev => {
@@ -308,16 +344,20 @@ $('deck-cards').addEventListener('click', ev => {
   }
 });
 
+$('cand-list').addEventListener('click', ev => {
+  const li = ev.target.closest('li');
+  if (!li || li.dataset.cand === undefined || $('run-btn').disabled) return;
+  candidates.splice(+li.dataset.cand, 1);
+  renderDeckEditor();
+});
+
 $('changes-clear').onclick = clearChanges;
 
 $('add-card-btn').onclick = () => {
   const input = $('add-card-input');
-  const name = input.value.trim();
-  if (!name) return;
-  const entry = cardCatalog.find(c => c.name.toLowerCase() === name.toLowerCase())
-             || cardCatalog.find(c => c.name.toLowerCase().startsWith(name.toLowerCase()));
+  const entry = lookupCatalogEntry(input.value);
   if (!entry) {
-    setVerdict('error', `Unknown card "${name}" — pick one from the list.`);
+    if (input.value.trim()) setVerdict('error', `Unknown card "${input.value.trim()}" — pick one from the list.`);
     return;
   }
   const upgrade = $('add-card-upgraded').checked ? 1 : 0;
@@ -332,6 +372,26 @@ $('add-card-input').addEventListener('keydown', ev => {
   if (ev.key === 'Enter') $('add-card-btn').click();
 });
 
+$('cand-add-btn').onclick = () => {
+  const input = $('cand-input');
+  const entry = lookupCatalogEntry(input.value);
+  if (!entry) {
+    if (input.value.trim()) setVerdict('error', `Unknown card "${input.value.trim()}" — pick one from the list.`);
+    return;
+  }
+  if (candidates.length >= 8) {
+    setVerdict('error', 'At most 8 candidates per compare run.');
+    return;
+  }
+  const upgrade = $('cand-upgraded').checked ? 1 : 0;
+  candidates.push({ id: entry.id, upgrade, name: entry.name + (upgrade ? '+' : '') });
+  input.value = '';
+  renderDeckEditor();
+};
+$('cand-input').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') $('cand-add-btn').click();
+});
+
 async function loadCardCatalog() {
   try {
     const r = await fetch('/api/cards');
@@ -341,7 +401,7 @@ async function loadCardCatalog() {
     $('card-options').innerHTML = cardCatalog
       .map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(`${c.cost}⚡ ${c.cardType} · ${c.rarity}`)}</option>`)
       .join('');
-  } catch { /* picker just stays empty */ }
+  } catch { /* pickers just stay empty */ }
 }
 
 // ─── Deck UI ─────────────────────────────────────────────────────────────
@@ -395,23 +455,28 @@ function connectWs() {
   };
 }
 
-let phaseDoneInfo = null; // baseline phaseDone payload, for status text
+const phaseDoneByKey = new Map(); // phase key -> phaseDone payload
 
 // Event handlers, one per `e.type` — dispatched from handleEvent below.
 // Wire-shape contract: these `type` strings + field names match Server/SimJob.cs Broadcast calls.
 const eventHandlers = {
   started(e) {
-    abMode = !!e.abTest;
-    phaseDoneInfo = null;
-    resetCharts();
+    phaseDoneByKey.clear();
+    const defs = [{ key: 'base', label: 'current deck' }];
+    if (e.mode === 'ab') defs.push({ key: 'variant', label: e.changeSummary || 'variant' });
+    if (e.mode === 'compare') e.candidates.forEach((label, i) => defs.push({ key: `cand${i}`, label }));
+    configurePhases(e.mode || 'single', defs);
+
     $('ab-panel').className = 'ab-panel hidden';
     $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
     $('best-headline').textContent = '';
     const cfg = `${e.seeds} seeds × K=${e.k}${e.patience ? ` (patience ${e.patience})` : ''}, ${e.turns} turns, ε=${e.epsilon}`;
-    setVerdict('running', abMode
-      ? `A/B: ${e.changeSummary || 'deck edit'} — ${cfg}`
-      : `Running: ${cfg}`);
-    $('status').textContent = abMode ? 'Phase 1/2: baseline deck…' : 'Started…';
+    const head = e.mode === 'compare'
+      ? `Compare: ${e.candidates.join(' vs ')}${e.changeSummary ? ` (on top of ${e.changeSummary})` : ''}`
+      : e.mode === 'ab' ? `A/B: ${e.changeSummary || 'deck edit'}`
+      : 'Running';
+    setVerdict('running', `${head} — ${cfg}`);
+    $('status').textContent = phaseDefs.length > 1 ? `Phase 1/${phaseDefs.length}: current deck…` : 'Started…';
     $('prog').style.width = '0%';
     setRunning(true);
   },
@@ -420,43 +485,47 @@ const eventHandlers = {
   newBest(e) { bestPending = e; },
 
   seed(e) {
-    const phase = series[e.phase] || series.base;
-    phase.best.push({ x: e.index, y: e.bestForSeed });
-    phase.avg.push({ x: e.index, y: e.runningAvg });
-    phase.ciUpper.push({ x: e.index, y: e.runningAvg + e.ci95 });
-    phase.ciLower.push({ x: e.index, y: e.runningAvg - e.ci95 });
-    if (!abMode) runningMean = e.runningAvg;
+    const s = seriesByPhase.get(e.phase);
+    if (!s) return;
+    s.best.push({ x: e.index, y: e.bestForSeed });
+    s.avg.push({ x: e.index, y: e.runningAvg });
+    s.ciUpper.push({ x: e.index, y: e.runningAvg + e.ci95 });
+    s.ciLower.push({ x: e.index, y: e.runningAvg - e.ci95 });
+    if (mode === 'single') runningMean = e.runningAvg;
 
-    // Progress: in A/B mode each phase is half the bar.
-    const phaseFrac = (e.index + 1) / e.total;
-    const pct = abMode
-      ? (e.phase === 'variant' ? 50 + phaseFrac * 50 : phaseFrac * 50)
-      : phaseFrac * 100;
-    $('prog').style.width = pct + '%';
+    // Progress: each phase is an equal slice of the bar.
+    const phaseIdx = phaseIndexByKey[e.phase] ?? 0;
+    const phaseCount = phaseDefs.length;
+    const frac = (e.index + 1) / e.total;
+    $('prog').style.width = ((phaseIdx + frac) / phaseCount) * 100 + '%';
     // Cheap text updates can stay per-event.
     const runsPerSec = (e.totalRuns / Math.max(1, e.elapsedMs / 1000)).toFixed(0);
-    const phaseTxt = abMode ? (e.phase === 'variant' ? 'Phase 2/2 (variant)' : 'Phase 1/2 (baseline)') + ' · ' : '';
+    const phaseTxt = phaseCount > 1
+      ? `Phase ${phaseIdx + 1}/${phaseCount} (${phaseDefs[phaseIdx].label}) · ` : '';
     $('status').textContent = `${phaseTxt}Seed ${e.index + 1} / ${e.total} · ${e.totalRuns} runs · ${runsPerSec} runs/s`;
     // Mark charts dirty; the rAF tick will redraw at most once per frame.
     chartsDirty = true;
     // Stat tiles get updated less often (once per ~10 seeds is fine).
     if (e.index % 10 === 0 || e.index + 1 === e.total) {
-      const tiles = [
-        statTile(`Running avg-of-best${abMode ? ` (${e.phase})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
+      const tiles = [];
+      const baseDone = phaseDoneByKey.get('base');
+      if (baseDone && e.phase !== 'base')
+        tiles.push(statTile('Current deck avg-of-best', `${fmt(baseDone.avgOfBest)} ± ${fmt(baseDone.ci95)}`));
+      tiles.push(
+        statTile(`Running avg-of-best${phaseCount > 1 ? ` (${phaseDefs[phaseIdx].label})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
         statTile('Last seed best', e.bestForSeed),
         statTile('Total runs', e.totalRuns),
-      ];
-      if (abMode && phaseDoneInfo)
-        tiles.unshift(statTile('Baseline avg-of-best', `${fmt(phaseDoneInfo.avgOfBest)} ± ${fmt(phaseDoneInfo.ci95)}`));
+      );
       renderStats(tiles);
     }
   },
 
   phaseDone(e) {
-    if (e.phase === 'base') {
-      phaseDoneInfo = e;
-      $('status').textContent = `Baseline done: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} · starting variant…`;
-    }
+    phaseDoneByKey.set(e.phase, e);
+    const phaseIdx = phaseIndexByKey[e.phase] ?? 0;
+    const next = phaseDefs[phaseIdx + 1];
+    if (next)
+      $('status').textContent = `${e.label}: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} · starting ${next.label}…`;
   },
 
   done(e) {
@@ -474,8 +543,7 @@ const eventHandlers = {
 
   abDone(e) {
     updateCharts();
-    const sign = e.lift >= 0 ? '+' : '';
-    setVerdict('done', `A/B done: lift ${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)} dmg`);
+    setVerdict('done', `A/B done: lift ${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)} dmg`);
     $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs total (paired over ${e.pairedSeeds} seeds)`;
 
     const panel = $('ab-panel');
@@ -485,7 +553,7 @@ const eventHandlers = {
       ['Change', e.changeSummary || '—'],
       ['Baseline', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`],
       ['Variant', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}`],
-      ['Lift', `${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)} (${sign}${fmt(e.liftPerTurn)}/turn)`],
+      ['Lift', `${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)} (${sgn(e.lift)}${fmt(e.liftPerTurn)}/turn)`],
       ['z-score (paired)', fmt(e.z)],
     ].map(([label, value]) =>
       `<div><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(String(value))}</span></div>`
@@ -494,8 +562,54 @@ const eventHandlers = {
     renderStats([
       statTile('Baseline avg-of-best', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`),
       statTile('Variant avg-of-best', `${fmt(e.variantAvg)} ± ${fmt(e.variantCi95)}`),
-      statTile('Lift', `${sign}${fmt(e.lift)} ± ${fmt(e.liftCi95)}`),
+      statTile('Lift', `${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)}`),
       statTile('z (paired)', fmt(e.z)),
+    ]);
+    setRunning(false);
+  },
+
+  compareDone(e) {
+    updateCharts();
+    setVerdict('done', `Compare done: best is ${e.winnerLabel}`);
+    $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs total (paired over ${e.pairedSeeds} seeds)`;
+
+    const panel = $('ab-panel');
+    panel.className = `ab-panel ${e.verdictClass}`;
+    $('ab-verdict-line').textContent = e.verdict;
+
+    // Ranking table: candidates by lift vs current deck, then the skip row.
+    const colorOf = label => phaseDefs.find(d => d.label === label)?.color || '#888';
+    const rows = e.results.map((r, i) => `
+      <tr class="${i === 0 && r.beatsBase ? 'winner' : ''}">
+        <td>${i + 1}</td>
+        <td><span class="swatch" style="background:${colorOf(r.label)}"></span>${escapeHtml(r.label)}</td>
+        <td>${fmt(r.avg)} ± ${fmt(r.ci95)}</td>
+        <td>${sgn(r.lift)}${fmt(r.lift)} ± ${fmt(r.liftCi95)}</td>
+        <td>${fmt(r.z)}</td>
+        <td>${r.beatsBase ? '<span class="chip good">beats deck</span>' : r.z < -1.96 ? '<span class="chip bad">worse</span>' : '<span class="chip">within noise</span>'}</td>
+      </tr>`).join('');
+    const skipRow = `
+      <tr class="skip-row">
+        <td>—</td>
+        <td><span class="swatch" style="background:${colorOf('current deck')}"></span>skip (current deck)</td>
+        <td>${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}</td>
+        <td>0</td><td>—</td><td></td>
+      </tr>`;
+    const wvr = e.winnerVsRunnerUp;
+    const wvrLine = wvr
+      ? `<div class="wvr">${escapeHtml(wvr.winnerLabel)} vs ${escapeHtml(wvr.runnerUpLabel)}: ${sgn(wvr.lift)}${fmt(wvr.lift)} ± ${fmt(wvr.liftCi95)} (z=${fmt(wvr.z)}${wvr.z > 1.96 ? ', decisive' : ', too close to call'})</div>`
+      : '';
+    $('ab-detail').innerHTML = `
+      <table class="rank-table">
+        <thead><tr><th>#</th><th>Card</th><th>avg-of-best</th><th>lift vs current</th><th>z</th><th></th></tr></thead>
+        <tbody>${rows}${skipRow}</tbody>
+      </table>${wvrLine}`;
+
+    renderStats([
+      statTile('Winner', e.winnerLabel),
+      statTile('Winner lift', `${sgn(e.results[0].lift)}${fmt(e.results[0].lift)} ± ${fmt(e.results[0].liftCi95)}`),
+      statTile('Current deck', `${fmt(e.baseAvg)} ± ${fmt(e.baseCi95)}`),
+      statTile('Total runs', e.totalRuns),
     ]);
     setRunning(false);
   },
@@ -542,7 +656,7 @@ function renderTurnCard(t) {
 
 function renderBestCombat(e) {
   const seedHex = e.seed.toString(16).toUpperCase();
-  const phaseTxt = abMode ? `[${e.phase === 'variant' ? 'variant' : 'baseline'}] ` : '';
+  const phaseTxt = phaseDefs.length > 1 && e.label ? `[${e.label}] ` : '';
   $('best-headline').textContent = `${phaseTxt}${e.totalDamage} dmg over ${e.turns.length} turns (${e.avgPerTurn.toFixed(1)}/turn) — seed 0x${seedHex}`;
   $('best-combat').innerHTML = e.turns.map(renderTurnCard).join('');
 }
