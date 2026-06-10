@@ -28,8 +28,7 @@ internal sealed class EpsilonGreedyPolicy : IPlayPolicy
         if (rng.NextDouble() < _epsilon)
         {
             var affordable = Playable.InHand(h, energyLeft).ToList();
-            if (affordable.Count == 0) return null;
-            return affordable[rng.Next(affordable.Count)];
+            return Playable.ChooseFrom(affordable, cands => cands[rng.Next(cands.Count)]);
         }
         return _base.ChooseCard(h, energyLeft, rng);
     }

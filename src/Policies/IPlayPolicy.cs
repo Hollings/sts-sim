@@ -19,18 +19,49 @@ internal interface IPlayPolicy
 
 /// <summary>
 /// Shared filtering logic so all policies treat "this card is playable right now"
-/// identically. Excludes cards with the Unplayable keyword (Ascenders Bane,
-/// Burn, etc.) and cards we can't afford.
+/// identically, matching the game's own rules. Split in two tiers for speed:
+/// a cheap screen (keyword + cost) applied to the whole hand, and the game's
+/// full <c>CardModel.CanPlay()</c> — which iterates hook listeners and covers
+/// card-logic gates (Clash's "only attacks in hand") and ShouldPlay preventers —
+/// applied only to the would-be pick via <see cref="ChooseFrom"/>.
 /// </summary>
 internal static class Playable
 {
-    public static bool IsPlayable(CardModel card, int energyLeft)
-    {
-        if (card.Keywords.Contains(CardKeyword.Unplayable)) return false;
-        if (card.EnergyCost.GetResolved() > energyLeft) return false;
-        return true;
-    }
+    /// <summary>
+    /// Cheap candidate screen: Unplayable keyword (Ascenders Bane, Burn) and
+    /// energy budget. GetAmountToSpend (not GetResolved) so X-cost cards —
+    /// which spend whatever you have, including 0 — always count as playable.
+    /// </summary>
+    public static bool PassesCheapFilter(CardModel card, int energyLeft)
+        => !card.Keywords.Contains(CardKeyword.Unplayable)
+           && card.EnergyCost.GetAmountToSpend() <= energyLeft;
 
+    /// <summary>Full game-accurate check. Prefer ChooseFrom in hot paths.</summary>
+    public static bool IsPlayable(CardModel card, int energyLeft)
+        => PassesCheapFilter(card, energyLeft) && card.CanPlay();
+
+    /// <summary>
+    /// Cheap-filtered hand. Callers must confirm their final candidate with
+    /// CanPlay() — most simply by selecting through <see cref="ChooseFrom"/>.
+    /// </summary>
     public static IEnumerable<CardModel> InHand(Harness.CombatHarness h, int energyLeft)
-        => h.Player.PlayerCombatState!.Hand.Cards.Where(c => IsPlayable(c, energyLeft));
+        => h.Player.PlayerCombatState!.Hand.Cards.Where(c => PassesCheapFilter(c, energyLeft));
+
+    /// <summary>
+    /// Run <paramref name="selector"/> over the candidates and validate the
+    /// pick with the game's CanPlay(). If a hook vetoes it (rare), drop it and
+    /// re-select, so policies never end the turn while legal plays remain.
+    /// Mutates <paramref name="candidates"/> on retry.
+    /// </summary>
+    public static CardModel? ChooseFrom(List<CardModel> candidates, Func<List<CardModel>, CardModel?> selector)
+    {
+        while (candidates.Count > 0)
+        {
+            var pick = selector(candidates);
+            if (pick == null) return null;
+            if (pick.CanPlay()) return pick;
+            candidates.Remove(pick);
+        }
+        return null;
+    }
 }

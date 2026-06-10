@@ -23,7 +23,6 @@ internal sealed class RandomPolicy : IPlayPolicy
         if (_earlyEndProbability > 0 && rng.NextDouble() < _earlyEndProbability) return null;
 
         var affordable = Playable.InHand(h, energyLeft).ToList();
-        if (affordable.Count == 0) return null;
-        return affordable[rng.Next(affordable.Count)];
+        return Playable.ChooseFrom(affordable, cands => cands[rng.Next(cands.Count)]);
     }
 }

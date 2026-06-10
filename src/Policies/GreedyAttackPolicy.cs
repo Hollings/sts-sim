@@ -14,6 +14,7 @@ internal sealed class GreedyAttackPolicy : IPlayPolicy
         foreach (var card in Playable.InHand(h, energyLeft))
         {
             if (card.Type != CardType.Attack) continue;
+            if (!card.CanPlay()) continue; // hook-vetoed; try the next attack
             return card;
         }
         return null;

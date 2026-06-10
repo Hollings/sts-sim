@@ -111,29 +111,34 @@ internal sealed class DamagePerTurnSim
 
     private async Task PlayPhase(Harness.CombatHarness harness, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState pcs, Random policyRng)
     {
-        while (pcs.Energy > 0)
+        // No energy gate here: 0-cost cards (Shivs!) are playable at 0 energy,
+        // exactly like the real game. The loop ends when the policy has nothing
+        // playable left. The cap is a safety valve against a policy/engine
+        // interaction that never drains the hand.
+        const int maxPlaysPerTurn = 500;
+        for (int plays = 0; plays < maxPlaysPerTurn; plays++)
         {
             var card = Policy.ChooseCard(harness, pcs.Energy, policyRng);
             if (card == null) break;
 
-            var cost = card.EnergyCost.GetResolved();
-            if (cost > pcs.Energy) break; // policy lied; bail
+            if (card.EnergyCost.GetAmountToSpend() > pcs.Energy) break; // policy lied; bail
 
-            var resources = new ResourceInfo
-            {
-                EnergySpent = cost,
-                EnergyValue = cost,
-                StarsSpent = 0,
-                StarValue = 0,
-            };
             var target = card.TargetType == TargetType.Self
                 ? harness.Player.Creature
                 : harness.Dummy;
-            // OnPlayWrapper does NOT auto-debit PCS.Energy — that's done by
-            // SpendResources upstream of the play action. So we deduct the cost
-            // ourselves; cards that gain energy mid-OnPlay (Offering, Bloodletting)
-            // will be visible in the next iter.
-            pcs.LoseEnergy(cost);
+            // SpendResources is the game's own pre-play debit (PlayCardAction
+            // does the same): captures X on X-cost cards (Whirlwind spends all
+            // energy instead of playing at X=0), debits energy/stars, and fires
+            // AfterEnergySpent. Cards that gain energy mid-OnPlay (Offering,
+            // Bloodletting) are visible to the policy on the next iteration.
+            var (energySpent, starsSpent) = await card.SpendResources();
+            var resources = new ResourceInfo
+            {
+                EnergySpent = energySpent,
+                EnergyValue = energySpent,
+                StarsSpent = starsSpent,
+                StarValue = starsSpent,
+            };
             PlayCapture.RecordManualPlay(card);
             await card.OnPlayWrapper(harness.Ctx, target, isAutoPlay: true, resources, skipCardPileVisuals: true);
         }

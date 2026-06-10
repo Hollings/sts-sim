@@ -48,6 +48,15 @@ internal static class Program
             if (args.Length > 0 && args[0] == "silent-tests")
                 return await SilentTests.SilentTestsRunner.RunAll();
 
+            // "smoke" runs just the fast Ironclad assertion suite (the same one
+            // experiment mode runs first) without the long benchmark afterwards.
+            if (args.Length > 0 && args[0] == "smoke")
+            {
+                Harness.Bootstrap();
+                await SmokeTests.RunAll();
+                return 0;
+            }
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;
