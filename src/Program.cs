@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,15 +11,94 @@ namespace StS2Sim;
 
 internal static class Program
 {
-    private static readonly string GameDir =
-        Environment.GetEnvironmentVariable("STS2_GAME_DIR")
-        ?? @"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64";
+    private static readonly string GameDir = ResolveGameDir();
 
     private static async Task<int> Main(string[] args)
     {
+        if (!File.Exists(Path.Combine(GameDir, "sts2.dll")))
+        {
+            Console.Error.WriteLine("ERROR: Couldn't find Slay the Spire 2.");
+            Console.Error.WriteLine($"       Looked for sts2.dll in: {GameDir}");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("       Install the game via Steam, or point the sim at it manually by");
+            Console.Error.WriteLine("       setting the STS2_GAME_DIR environment variable to the game's");
+            Console.Error.WriteLine(@"       data_sts2_windows_x86_64 folder, e.g.:");
+            Console.Error.WriteLine(@"       D:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64");
+            HoldWindowOpenIfDoubleClicked();
+            return 1;
+        }
+
         InstallAssemblyResolver();
         GodotShims.Apply();
         return await BootstrapAndRun(args);
+    }
+
+    /// <summary>
+    /// Find the game's managed-assembly folder. Order: explicit STS2_GAME_DIR
+    /// override → default Steam paths → every Steam library folder from the
+    /// registry + libraryfolders.vdf (covers games installed on other drives).
+    /// </summary>
+    private static string ResolveGameDir()
+    {
+        var env = Environment.GetEnvironmentVariable("STS2_GAME_DIR");
+        if (!string.IsNullOrEmpty(env)) return env;
+
+        const string gameSubPath = @"steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64";
+        var candidates = new List<string>
+        {
+            @"C:\Program Files (x86)\Steam\" + gameSubPath,
+            @"C:\Program Files\Steam\" + gameSubPath,
+        };
+        foreach (var library in EnumerateSteamLibraries())
+            candidates.Add(Path.Combine(library, gameSubPath));
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(Path.Combine(candidate, "sts2.dll"))) return candidate;
+        }
+        return candidates[0]; // not found; Main prints the friendly error
+    }
+
+    private static IEnumerable<string> EnumerateSteamLibraries()
+    {
+        if (!OperatingSystem.IsWindows()) yield break;
+        string? steamPath = null;
+        try
+        {
+            steamPath = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null) as string;
+        }
+        catch { /* no registry access / no Steam */ }
+        if (string.IsNullOrEmpty(steamPath)) yield break;
+
+        steamPath = steamPath.Replace('/', '\\');
+        yield return steamPath;
+
+        // libraryfolders.vdf lists every additional library: "path"  "D:\\SteamLibrary"
+        var vdf = Path.Combine(steamPath, "steamapps", "libraryfolders.vdf");
+        if (!File.Exists(vdf)) yield break;
+        string text;
+        try { text = File.ReadAllText(vdf); }
+        catch { yield break; }
+        foreach (Match m in Regex.Matches(text, "\"path\"\\s+\"([^\"]+)\""))
+            yield return m.Groups[1].Value.Replace(@"\\", @"\");
+    }
+
+    /// <summary>
+    /// When launched by double-click (own console window), an immediate fatal
+    /// error would close the window before anyone can read it.
+    /// </summary>
+    private static void HoldWindowOpenIfDoubleClicked()
+    {
+        try
+        {
+            if (!Console.IsInputRedirected)
+            {
+                Console.Error.WriteLine("\nPress any key to exit...");
+                Console.ReadKey(intercept: true);
+            }
+        }
+        catch { /* no console at all */ }
     }
 
     private static void InstallAssemblyResolver()
@@ -94,6 +175,7 @@ internal static class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine("FATAL: " + ex);
+            HoldWindowOpenIfDoubleClicked();
             return 1;
         }
     }

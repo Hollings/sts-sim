@@ -35,6 +35,13 @@ dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; ex
 The exe is fully standalone — no mod required, no Python, no game running.
 Just needs a `current_run.save` somewhere under `%APPDATA%\SlayTheSpire2\`.
 
+Distribution: `.\publish.ps1` → `dist\StS2Sim-win64.zip` (~35 MB,
+self-contained .NET, game DLLs resolved from the target's Steam install at
+runtime — never bundled). Game dir discovery order: `STS2_GAME_DIR` env →
+default Steam paths → Steam registry + `libraryfolders.vdf` (all drives).
+Fatal startup errors hold the console window open so double-click users can
+read them.
+
 ## How the bootstrap works
 
 The game DLL was built for a Godot host. We trick it into running outside one. **Five

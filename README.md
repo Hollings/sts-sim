@@ -9,6 +9,21 @@ cd StS2Sim
 dotnet run -c Release -p:STS2GameDir="C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
 ```
 
+## Package for someone else (no git, no .NET, no build tools)
+
+```powershell
+cd StS2Sim
+.\publish.ps1     # → dist\StS2Sim-win64.zip (~35 MB)
+```
+
+The zip is self-contained: unzip anywhere, double-click `StS2Sim.exe`, browser
+opens. The target machine only needs Windows and Slay the Spire 2 installed via
+Steam — the game's location is auto-discovered through the Steam registry key
+and `libraryfolders.vdf` (any drive), overridable with `STS2_GAME_DIR`. The
+game's own DLLs are resolved from the player's install at runtime and are
+never bundled, so the zip contains no MegaCrit code. A `README.txt` with run
+and troubleshooting instructions is included in the zip.
+
 Default mode starts the embedded web UI on `http://localhost:52324` and opens the browser. It reads your freshest `current_run.save`, shows the deck, and lets you:
 
 - run a best-of-K damage sim with live charts (per-seed scatter, running average ± CI, histogram),
