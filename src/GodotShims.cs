@@ -140,12 +140,54 @@ internal static class GodotShims
         harmony.Patch(
             AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.OrbCmd), "AddSlots"),
             prefix: new HarmonyMethod(GetPrefix(nameof(OrbCmd_AddSlots_Prefix))));
+        // RemoveSlots (Bulk Up) has the same unguarded GetCreatureNode(...)
+        // dereference — same treatment.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.OrbCmd), "RemoveSlots"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(OrbCmd_RemoveSlots_Prefix))));
+
+        // The co-op "protect a teammate" powers (Flanking, Intercept's Covered,
+        // Knockdown, Tag Team) override AfterApplied solely to render the
+        // applying PLAYER's name into a hover-tip var via
+        // RunManager.Instance.NetService — netcode we don't have. The gameplay
+        // effect lives in their Modify* hooks, which still run; only the
+        // display string is lost.
+        foreach (var powerType in new[]
+        {
+            typeof(MegaCrit.Sts2.Core.Models.Powers.FlankingPower),
+            typeof(MegaCrit.Sts2.Core.Models.Powers.CoveredPower),
+            typeof(MegaCrit.Sts2.Core.Models.Powers.KnockdownPower),
+            typeof(MegaCrit.Sts2.Core.Models.Powers.TagTeamPower),
+        })
+        {
+            harmony.Patch(
+                AccessTools.Method(powerType, "AfterApplied"),
+                prefix: new HarmonyMethod(GetPrefix(nameof(CompletedTask_Prefix))));
+        }
+
+        // PlayerCmd.EndTurn (Void Form: "play this, your turn ends") drives
+        // CombatManager's multiplayer ready-up machinery → RunManager NRE.
+        // Our TurnHooks own the turn flow, so just raise a flag the play
+        // loop checks — the card's real semantic (no more plays this turn)
+        // is preserved.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.PlayerCmd), "EndTurn"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(PlayerCmd_EndTurn_Prefix))));
 
         // Knowledge Demon (and anything else forcing a "choose a card" screen)
         // calls CardSelectCmd.FromChooseACardScreen, which drives a UI flow.
         // Auto-pick the first option, mirroring AutoCardSelector's heuristic.
         PatchPrefix(harmony, typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd),
             "FromChooseACardScreen", nameof(FromChooseACardScreen_Prefix));
+
+        // CardSelectCmd.FromSimpleGrid (Dredge's "return cards from discard",
+        // and similar pickers) only consults the installed ICardSelector when
+        // LocalContext.IsMe(player) — false headless — and otherwise awaits a
+        // REMOTE multiplayer choice that never arrives (hang), after touching
+        // RunManager netcode singletons (crash). Route straight to our
+        // AutoCardSelector and skip the choice-sync machinery entirely.
+        PatchPrefix(harmony, typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd),
+            "FromSimpleGrid", nameof(FromSimpleGrid_Prefix));
 
         // Kaiser Crab is rendered as a background scene: BOTH its monsters
         // (Rocket, Crusher) drive every move through a Background property
@@ -249,6 +291,17 @@ internal static class GodotShims
         return false;
     }
 
+    private static bool FromSimpleGrid_Prefix(
+        System.Collections.Generic.IReadOnlyList<CardModel> cardsIn,
+        MegaCrit.Sts2.Core.CardSelection.CardSelectorPrefs prefs,
+        ref Task<System.Collections.Generic.IEnumerable<CardModel>> __result)
+    {
+        var selector = MegaCrit.Sts2.Core.Commands.CardSelectCmd.Selector;
+        if (selector == null) return true; // no headless selector installed; run the original
+        __result = selector.GetSelectedCards(cardsIn, prefs.MinSelect, prefs.MaxSelect);
+        return false;
+    }
+
     private static bool NGame_CurrentRunNode_Prefix(ref MegaCrit.Sts2.Core.Nodes.NRun? __result)
     {
         __result = null;
@@ -289,6 +342,32 @@ internal static class GodotShims
             queue.AddCapacity(Math.Min(10 - queue.Capacity, amount));
         }
         __result = Task.CompletedTask;
+        return false;
+    }
+
+    // Mirrors OrbCmd.RemoveSlots minus the RemoveSlotAnim UI call.
+    // RemoveCapacity itself evicts orbs over the new capacity.
+    private static bool OrbCmd_RemoveSlots_Prefix(
+        MegaCrit.Sts2.Core.Entities.Players.Player player, int amount)
+    {
+        if (!MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsOverOrEnding)
+        {
+            var queue = player.PlayerCombatState.OrbQueue;
+            queue.RemoveCapacity(Math.Min(queue.Capacity, amount));
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Set when a card play requests the turn to end (Void Form). The play
+    /// loop (<see cref="DamagePerTurnSim.RunPlayPhase"/>) checks and clears
+    /// this at the right moments; single-card test plays can ignore it.
+    /// </summary>
+    internal static bool EndTurnRequested;
+
+    private static bool PlayerCmd_EndTurn_Prefix()
+    {
+        EndTurnRequested = true;
         return false;
     }
 

@@ -130,9 +130,13 @@ internal sealed class DamagePerTurnSim
         // exactly like the real game. The loop ends when the policy has nothing
         // playable left. The cap is a safety valve against a policy/engine
         // interaction that never drains the hand.
+        GodotShims.EndTurnRequested = false;
         const int maxPlaysPerTurn = 500;
         for (int plays = 0; plays < maxPlaysPerTurn; plays++)
         {
+            // A played card ended the turn (Void Form) — no further plays are
+            // legal this turn, exactly like the real game.
+            if (GodotShims.EndTurnRequested) break;
             if (stop != null && stop()) break;
             if (!harness.Player.Creature.IsAlive) break;
 

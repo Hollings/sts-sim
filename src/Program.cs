@@ -169,6 +169,15 @@ internal static class Program
             if (args.Length > 0 && args[0] == "char-tests")
                 return await CharTests.CharTestsRunner.RunAll();
 
+            // "card-sweep" plays EVERY playable card once (base + upgraded)
+            // and reports crashes/hangs — the per-card coverage map. Exit 2
+            // on any failure.
+            if (args.Length > 0 && args[0] == "card-sweep")
+            {
+                Harness.Bootstrap();
+                return await CardSweep.RunAll();
+            }
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

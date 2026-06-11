@@ -31,7 +31,8 @@ dotnet run -c Release -- smoke            # the 15 Ironclad assertion tests, fas
 dotnet run -c Release -- silent-tests     # the 174-test Silent card battery; exit 2 on crashes
 dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; exit 2 on crashes
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (dummy + fight); exit 2 on crashes
-dotnet run -c Release -- char-tests       # 44-test Regent/Necrobinder/Defect mechanics battery; exit 2 on crashes
+dotnet run -c Release -- char-tests       # 45-test Regent/Necrobinder/Defect mechanics battery; exit 2 on crashes
+dotnet run -c Release -- card-sweep       # play EVERY card once (base + upgraded, ~1040 plays); exit 2 on crash/hang
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark on a pinned suite
 ```
 
@@ -219,7 +220,19 @@ verifies all 60 encounters run crash-free (~2s). Key pieces:
   dereferences them without null checks. `new NodePath(string)` is patched to skip
   native init — it hard-kills the process (0xC0000005) during argument evaluation
   otherwise. A new monster touching an unstubbed member shows up as a CRASH in
-  `encounter-sweep`; add a shim there.
+  `encounter-sweep`; a new CARD doing it shows up in `card-sweep` — run both
+  after any game patch.
+- **Anything touching netcode singletons headless dies or hangs.** Three found
+  by `card-sweep`: (1) `CardSelectCmd.FromSimpleGrid` (Dredge) only consults
+  the installed `ICardSelector` when `LocalContext.IsMe(player)` — false
+  headless — and otherwise awaits a remote MP choice forever; shimmed to route
+  straight to AutoCardSelector. (2) The co-op powers (Flanking, Covered,
+  Knockdown, TagTeam) render the applier's player name via
+  `RunManager.Instance.NetService` in `AfterApplied`; no-op'd (display-only —
+  their gameplay lives in Modify* hooks which still run). (3) `PlayerCmd.EndTurn`
+  (Void Form) drives the MP ready-up machinery; shimmed to set
+  `GodotShims.EndTurnRequested`, which `RunPlayPhase` honors — no plays after
+  Void Form, like the real game.
 - **Boss survival is a lower bound — but a tighter one than it looks.** The
   default policy races and never deliberately blocks. We benchmarked
   intent-aware blocking personalities (`policy-bench`) and they did NOT raise

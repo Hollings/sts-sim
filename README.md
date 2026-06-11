@@ -38,7 +38,8 @@ dotnet run -c Release -- smoke            # 15 fast Ironclad assertion tests
 dotnet run -c Release -- silent-tests     # 174-test Silent card battery (exit 2 on harness crashes)
 dotnet run -c Release -- encounter-sweep  # one short fight vs all 60 encounters (exit 2 on crashes)
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (exit 2 on crashes)
-dotnet run -c Release -- char-tests       # 44-test Regent/Necrobinder/Defect mechanics battery (exit 2 on crashes)
+dotnet run -c Release -- char-tests       # 45-test Regent/Necrobinder/Defect mechanics battery (exit 2 on crashes)
+dotnet run -c Release -- card-sweep       # play every card once, base + upgraded (exit 2 on crash/hang)
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark
 dotnet run -c Release -- experiment       # legacy console K-curve + unpaired A/B
 ```

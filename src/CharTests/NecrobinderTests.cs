@@ -139,6 +139,34 @@ internal static class NecrobinderTests
                 "Rattle hits twice after one Osty attack (7x2 = 14)",
                 new List<Harness.DeckEntry> { new(typeof(Bodyguard)), new(typeof(Poke)), new(typeof(Rattle)) },
                 (h, b) => TestHelpers.Expect(b.dummyHp - h.Dummy.CurrentHp, 6 + 14, "total damage")),
+
+            // Regression: user-reported crash adding Dredge in compare mode.
+            // Dredge drives CardSelectCmd.FromSimpleGrid, which headless used
+            // to fall into the multiplayer remote-choice wait (the selector
+            // was only consulted when LocalContext.IsMe — never true here).
+            // Now routed to AutoCardSelector: first 3 discard cards to hand.
+            await CharTestHelpers.Test<Necrobinder>(
+                "Dredge returns 3 cards from discard to hand",
+                new List<Harness.DeckEntry>
+                {
+                    new(typeof(Dredge)), new(typeof(StrikeNecrobinder)), new(typeof(StrikeNecrobinder)),
+                    new(typeof(StrikeNecrobinder)), new(typeof(DefendNecrobinder)),
+                },
+                async h =>
+                {
+                    var pcs = h.Player.PlayerCombatState!;
+                    Reflect.SetEnergy(pcs, 9);
+                    var dredge = CharTestHelpers.MoveToHand(h, typeof(Dredge))!;
+                    foreach (var c in pcs.DrawPile.Cards.ToList())
+                    {
+                        pcs.DrawPile.RemoveInternal(c);
+                        pcs.DiscardPile.AddInternal(c);
+                    }
+                    await CharTestHelpers.PlayCard(h, dredge);
+                    return TestHelpers.Expect(pcs.Hand.Cards.Count, 3, "hand size after Dredge")
+                        ?? TestHelpers.Expect(pcs.DiscardPile.Cards.Count, 1, "discard left")
+                        ?? TestHelpers.Expect(pcs.ExhaustPile.Cards.OfType<Dredge>().Count(), 1, "Dredge exhausted");
+                }),
         };
 
         return results;
