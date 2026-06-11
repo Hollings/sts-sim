@@ -31,6 +31,11 @@ Default mode starts the embedded web UI on `http://localhost:52324` and opens th
 - answer the card-reward question directly: add 2–4 **compare candidates** and get a ranked table — each candidate tested as +1 card on identical shuffles, paired lift vs skipping, plus a winner-vs-runner-up significance test ("TAKE BLUDGEON — beats your current deck and clearly beats the other options"),
 - or pick a **real opponent**: any boss, elite, or normal encounter in the game. The sim then runs the whole fight — genuine monster AI through `MonsterMoveStateMachine`, real damage to the player, block, minion spawns — and ranks the deck by outcome (win rate + HP kept on win / boss HP left on loss). A/B and compare both work against an opponent, so "which of these three cards best helps me beat Vantom?" is one click.
 
+For programmatic use there's also `POST /api/advise/combat`: send a JSON
+snapshot of an in-progress combat (hand, piles, HP, powers, enemy intents)
+and get every legal action ranked by rollout outcome — the building block
+for driving a live game from outside. See [AI_PLAYER.md](AI_PLAYER.md).
+
 Other modes:
 
 ```bash
@@ -40,6 +45,7 @@ dotnet run -c Release -- encounter-sweep  # one short fight vs all 80 encounters
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (exit 2 on crashes)
 dotnet run -c Release -- char-tests       # 45-test Regent/Necrobinder/Defect mechanics battery (exit 2 on crashes)
 dotnet run -c Release -- card-sweep       # play every card once, base + upgraded (exit 2 on crash/hang)
+dotnet run -c Release -- advise-test      # combat-advisor smoke test (exit 2 on failure)
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark
 dotnet run -c Release -- experiment       # legacy console K-curve + unpaired A/B
 ```

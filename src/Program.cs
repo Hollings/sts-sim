@@ -178,6 +178,12 @@ internal static class Program
                 return await CardSweep.RunAll();
             }
 
+            // "advise-test" smoke-tests the combat advisor (live-state mirror
+            // + per-action rollouts behind POST /api/advise/combat). Exit 2
+            // on failed checks.
+            if (args.Length > 0 && args[0] == "advise-test")
+                return await Advise.AdviseTest.RunAll();
+
             Harness.Bootstrap();
             var webRoot = ResolveWebRoot();
             var port = int.TryParse(Environment.GetEnvironmentVariable("STS2SIM_PORT"), out var p) ? p : 52324;

@@ -33,8 +33,16 @@ dotnet run -c Release -- encounter-sweep  # 1 short fight vs EVERY encounter; ex
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (dummy + fight); exit 2 on crashes
 dotnet run -c Release -- char-tests       # 45-test Regent/Necrobinder/Defect mechanics battery; exit 2 on crashes
 dotnet run -c Release -- card-sweep       # play EVERY card once (base + upgraded, ~1040 plays); exit 2 on crash/hang
+dotnet run -c Release -- advise-test      # combat-advisor smoke (live-state mirror + rollouts); exit 2 on failure
 dotnet run -c Release -- policy-bench     # play-policy uplift benchmark on a pinned suite
 ```
+
+The server also exposes `POST /api/advise/combat` — give it a JSON snapshot
+of an in-progress combat and it returns every legal action ranked by rollout
+outcome. This is the sim's contribution to the end-to-end AI player; the
+architecture, request schema, and fidelity caveats live in **AI_PLAYER.md**.
+The schema is field-compatible with the snecko-eye mod's `GET /state`, but
+the sim has no dependency on that mod — keep it that way.
 
 All five characters (Ironclad, Silent, Regent, Necrobinder, Defect) run in
 both modes — verified by `character-sweep`. Per-card assertion coverage:

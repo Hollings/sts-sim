@@ -136,11 +136,12 @@ internal sealed class EncounterSim
     // All of these read State.Enemies (not the harness's initial list) so
     // mid-combat spawns count, and the win condition uses the game's own
     // semantics: combat ends when no PRIMARY enemy lives (background or
-    // utility creatures don't keep a fight alive).
-    private static bool AllEnemiesDead(Harness.CombatHarness h)
+    // utility creatures don't keep a fight alive). Internal: the combat
+    // advisor's rollouts share these definitions.
+    internal static bool AllEnemiesDead(Harness.CombatHarness h)
         => !h.State.Enemies.Any(e => e.IsAlive && e.IsPrimaryEnemy);
 
-    private static int TotalEnemyHp(Harness.CombatHarness h)
+    internal static int TotalEnemyHp(Harness.CombatHarness h)
         => h.State.Enemies.Where(e => e.IsAlive && e.IsPrimaryEnemy).Sum(e => e.CurrentHp);
 
     /// <summary>
@@ -148,6 +149,6 @@ internal sealed class EncounterSim
     /// Matches how humans usually secure kills; good enough until policies
     /// learn real targeting.
     /// </summary>
-    private static Creature? LowestHpAliveEnemy(Harness.CombatHarness h)
+    internal static Creature? LowestHpAliveEnemy(Harness.CombatHarness h)
         => h.State.Enemies.Where(e => e.IsAlive).OrderBy(e => e.CurrentHp).FirstOrDefault();
 }

@@ -95,13 +95,13 @@ internal static class Harness
         => ModelDb.AllCharacters.FirstOrDefault(c => c.Id.ToString() == characterId)?.GetType();
 
     /// <summary>Runtime-type overload for callers that receive character type dynamically.</summary>
-    public static CombatHarness BeginCombat(Type characterType, IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null)
+    public static CombatHarness BeginCombat(Type characterType, IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null, IReadOnlyList<string>? monsterIds = null)
     {
         try
         {
             return (CombatHarness)BeginCombatGeneric
                 .MakeGenericMethod(characterType)
-                .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds, encounterId })!;
+                .Invoke(null, new object?[] { deckOverride, netId, shuffleSeed, relicIds, encounterId, monsterIds })!;
         }
         catch (TargetInvocationException tie) when (tie.InnerException != null)
         {
@@ -126,7 +126,7 @@ internal static class Harness
                 && pt.GetGenericArguments()[0] == typeof(DeckEntry);
         });
 
-    public static CombatHarness BeginCombat<TCharacter>(IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null)
+    public static CombatHarness BeginCombat<TCharacter>(IEnumerable<DeckEntry>? deckOverride, ulong netId = 1UL, uint shuffleSeed = 1u, IEnumerable<string>? relicIds = null, string? encounterId = null, IReadOnlyList<string>? monsterIds = null)
         where TCharacter : CharacterModel
     {
         var character = ModelDb.Character<TCharacter>();
@@ -187,6 +187,25 @@ internal static class Harness
                 // CombatManager.AddCreature does this in the real game: builds
                 // the move state machine. Without it NextMove stays UNSET and
                 // TakeTurn throws.
+                monster.SetUpForCombat();
+                Reflect.ReseedMonsterRng(monster, monsterSeed++);
+                enemies.Add(creature);
+            }
+        }
+        else if (monsterIds is { Count: > 0 })
+        {
+            // Mirror mode (combat advisor): build an arbitrary enemy lineup
+            // from MONSTER.* ids — the same plumbing as encounter mode minus
+            // the EncounterModel. Caller force-sets HP/powers/intents after.
+            uint monsterSeed = shuffleSeed ^ 0x0DDBA11u;
+            int slotNum = 1;
+            foreach (var id in monsterIds)
+            {
+                var canonical = ModelDb.GetByIdOrNull<MonsterModel>(ModelId.Deserialize(id))
+                    ?? throw new ArgumentException($"Unknown monster id '{id}'");
+                var monster = (MonsterModel)canonical.ToMutable();
+                var creature = combat.CreateCreature(monster, CombatSide.Enemy, $"slot{slotNum++}");
+                combat.AddCreature(creature);
                 monster.SetUpForCombat();
                 Reflect.ReseedMonsterRng(monster, monsterSeed++);
                 enemies.Add(creature);

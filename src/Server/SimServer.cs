@@ -110,6 +110,9 @@ internal sealed class SimServer
                 case "/api/sim/start":
                     await ServeSimStart(ctx);
                     break;
+                case "/api/advise/combat":
+                    await ServeAdvise(ctx);
+                    break;
                 case "/api/sim/stop":
                     _currentJobCts?.Cancel();
                     Send(ctx, 200, "application/json", "{\"ok\":true}");
@@ -304,6 +307,69 @@ internal sealed class SimServer
 
         Send(ctx, 200, "application/json", "{\"ok\":true,\"started\":true}");
     }
+
+    /// <summary>
+    /// POST /api/advise/combat — rank every legal action in a live combat
+    /// state (see AI_PLAYER.md for the contract). Body: an AdviseRequest-
+    /// shaped JSON (field-compatible with snecko-eye's GET /state). Query:
+    /// ?seeds=12&amp;horizon=8. Runs synchronously (sub-second at defaults);
+    /// the harness is a process singleton, so this waits briefly for any
+    /// running sim job and refuses with 503 rather than interleaving.
+    /// </summary>
+    private async Task ServeAdvise(HttpListenerContext ctx)
+    {
+        if (ctx.Request.HttpMethod != "POST")
+        {
+            Send(ctx, 405, "application/json", "{\"error\":\"POST only\"}");
+            return;
+        }
+        var body = await new StreamReader(ctx.Request.InputStream).ReadToEndAsync();
+        Advise.AdviseRequest? req;
+        try
+        {
+            req = JsonSerializer.Deserialize<Advise.AdviseRequest>(body);
+        }
+        catch (Exception ex)
+        {
+            await SendJson(ctx, 400, new { error = "bad request json: " + ex.Message });
+            return;
+        }
+        if (req?.Combat == null)
+        {
+            await SendJson(ctx, 400, new { error = "missing 'combat' block" });
+            return;
+        }
+
+        int seeds = ParseQueryInt(ctx, "seeds", 12, 1, 200);
+        int horizon = ParseQueryInt(ctx, "horizon", 8, 1, 50);
+
+        await _jobGate.WaitAsync();
+        try
+        {
+            if (_currentJobTask is { IsCompleted: false })
+            {
+                var done = await Task.WhenAny(_currentJobTask, Task.Delay(TimeSpan.FromSeconds(10)));
+                if (done != _currentJobTask)
+                {
+                    await SendJson(ctx, 503, new { error = "a sim job is running; stop it (POST /api/sim/stop) or retry later" });
+                    return;
+                }
+            }
+            var advice = await Advise.CombatAdvisor.Advise(req, seeds, horizon);
+            await SendJson(ctx, 200, advice);
+        }
+        catch (Exception ex)
+        {
+            await SendJson(ctx, 500, new { error = ex.Message });
+        }
+        finally
+        {
+            _jobGate.Release();
+        }
+    }
+
+    private static int ParseQueryInt(HttpListenerContext ctx, string name, int fallback, int min, int max)
+        => int.TryParse(ctx.Request.QueryString[name], out var v) ? Math.Clamp(v, min, max) : fallback;
 
     private static List<Harness.DeckEntry> ResolveEntries(IEnumerable<SaveFileReader.DeckCard> cards)
         => cards.Select(c =>

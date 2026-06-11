@@ -66,6 +66,32 @@ internal static class Reflect
     public static void SetCurrentHp(Creature creature, int hp)
         => CreatureCurrentHp.SetValue(creature, hp);
 
+    private static readonly PropertyInfo CreatureMaxHp =
+        typeof(Creature).GetProperty("MaxHp", BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("Creature.MaxHp not found");
+
+    private static readonly PropertyInfo CreatureBlock =
+        typeof(Creature).GetProperty("Block", BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("Creature.Block not found");
+
+    /// <summary>State mirroring: force max HP without the heal/clamp side
+    /// effects of CreatureCmd.SetMaxHp. Set this BEFORE SetCurrentHp.</summary>
+    public static void SetMaxHp(Creature creature, int maxHp)
+        => CreatureMaxHp.SetValue(creature, maxHp);
+
+    /// <summary>State mirroring: force current block (private setter).</summary>
+    public static void SetBlock(Creature creature, int block)
+        => CreatureBlock.SetValue(creature, block);
+
+    private static readonly PropertyInfo PowerAmount =
+        typeof(PowerModel).GetProperty("Amount", BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("PowerModel.Amount not found");
+
+    /// <summary>State mirroring: force a power's stack count to an exact
+    /// value, bypassing the apply-time modifier hooks.</summary>
+    public static void SetPowerAmount(PowerModel power, int amount)
+        => PowerAmount.SetValue(power, amount);
+
     private static readonly FieldInfo MonsterRunRngField =
         typeof(MonsterModel).GetField("_runRng", BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException("MonsterModel._runRng not found");
