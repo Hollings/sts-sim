@@ -190,7 +190,9 @@ as the opponent and the sim runs the whole fight: monsters' `MonsterMoveStateMac
 rolls and performs real moves through the game pipeline, the player takes damage,
 block matters, minions spawn, and the trial ends on death or the turn cap.
 Score = +player HP on win / −living primary-enemy HP on loss. `encounter-sweep`
-verifies all 60 encounters run crash-free (~2s). Key pieces:
+verifies all 80 encounters run crash-free (~2s) — that's every act including
+Underdocks, the alternate act-1 biome that ActModel.GetDefaultList() omits
+(EncounterCatalog reads ModelDb.Acts for exactly this reason). Key pieces:
 - `EncounterSim.cs` — the fight loop (player half-turn from DamagePerTurnSim's shared
   play phase + `TurnHooks.EnemyTurn`, which mirrors CombatManager's SwitchSides →
   enemy StartTurn → TakeTurn-per-enemy → EndEnemyTurnInternal flow).

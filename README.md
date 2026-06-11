@@ -36,7 +36,7 @@ Other modes:
 ```bash
 dotnet run -c Release -- smoke            # 15 fast Ironclad assertion tests
 dotnet run -c Release -- silent-tests     # 174-test Silent card battery (exit 2 on harness crashes)
-dotnet run -c Release -- encounter-sweep  # one short fight vs all 60 encounters (exit 2 on crashes)
+dotnet run -c Release -- encounter-sweep  # one short fight vs all 80 encounters (exit 2 on crashes)
 dotnet run -c Release -- character-sweep  # starter-deck trial per character (exit 2 on crashes)
 dotnet run -c Release -- char-tests       # 45-test Regent/Necrobinder/Defect mechanics battery (exit 2 on crashes)
 dotnet run -c Release -- card-sweep       # play every card once, base + upgraded (exit 2 on crash/hang)
@@ -62,4 +62,4 @@ See [CLAUDE.md](CLAUDE.md) for the full bootstrap walkthrough, project layout, t
 
 - Phase 1 (card piles, draw, energy, block, exhaust, multi-hit) — done, smoke-tested.
 - Phase 2 (powers, relics, hooks, turn-cycle events) — done, verified by the Silent battery (166/174 pass, 8 skips for unimplemented mechanics like multi-target) and the character battery (44/44: orbs incl. end-of-turn passives, Osty, stars/Forge, all three starter relics).
-- Phase 3 (real enemy turns / survivability) — done; all 60 encounters run crash-free (`encounter-sweep`). Caveat: the play policy doesn't read enemy intents yet, so it only blocks when ε-exploration stumbles into it — win rates are a fair *comparator* between decks but a *lower bound* on absolute winnability.
+- Phase 3 (real enemy turns / survivability) — done; all 80 encounters across all four acts (including Underdocks) run crash-free (`encounter-sweep`). Caveat: the play policy doesn't read enemy intents yet, so it only blocks when ε-exploration stumbles into it — win rates are a fair *comparator* between decks but a *lower bound* on absolute winnability.

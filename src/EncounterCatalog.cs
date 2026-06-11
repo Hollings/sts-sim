@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.Models.Acts;
 using MegaCrit.Sts2.Core.Rooms;
 
 namespace StS2Sim;
@@ -19,8 +18,12 @@ internal static class EncounterCatalog
     public static IReadOnlyList<Entry> GetEncounters()
     {
         var seen = new HashSet<string>();
-        var list = new List<Entry>();
-        foreach (var act in ActModel.GetDefaultList())
+        var list = new List<(Entry Entry, int ActOrder)>();
+        // ModelDb.Acts, NOT ActModel.GetDefaultList(): the default list is
+        // only the three default biomes — it omits Underdocks (the waterfall
+        // act that randomly replaces Overgrowth as act 1), so its elites and
+        // boss never showed in the picker.
+        foreach (var (act, actIdx) in ModelDb.Acts.Select((a, i) => (a, i)))
         {
             var actName = CardLabels.PrettyName(act.Id.ToString());
             foreach (var enc in act.AllEncounters)
@@ -29,14 +32,16 @@ internal static class EncounterCatalog
                 if (enc.RoomType is not (RoomType.Monster or RoomType.Elite or RoomType.Boss)) continue;
                 var id = enc.Id.ToString();
                 if (!seen.Add(id)) continue;
-                list.Add(new Entry(id, CardLabels.PrettyName(id), enc.RoomType.ToString(), actName));
+                list.Add((new Entry(id, CardLabels.PrettyName(id), enc.RoomType.ToString(), actName), actIdx));
             }
         }
-        // Bosses first within each act — they're the headline use case.
+        // Game's act order (act-1 biomes adjacent), bosses first within each
+        // act — they're the headline use case.
         return list
-            .OrderBy(e => e.Act)
-            .ThenBy(e => e.RoomType switch { "Boss" => 0, "Elite" => 1, _ => 2 })
-            .ThenBy(e => e.Name)
+            .OrderBy(x => x.ActOrder)
+            .ThenBy(x => x.Entry.RoomType switch { "Boss" => 0, "Elite" => 1, _ => 2 })
+            .ThenBy(x => x.Entry.Name)
+            .Select(x => x.Entry)
             .ToList();
     }
 }
