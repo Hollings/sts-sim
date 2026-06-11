@@ -22,6 +22,9 @@ internal static class CardCatalog
         var pools = new List<CardPoolModel>();
         if (character != null) pools.Add(character.CardPool);
         pools.Add(ModelDb.CardPool<ColorlessCardPool>());
+        // Event-reward cards (Apparition, Apotheosis, ...) are obtainable in
+        // real runs, so they belong in the "what if I had X?" picker.
+        pools.Add(ModelDb.CardPool<EventCardPool>());
 
         var seen = new HashSet<string>();
         var list = new List<Entry>();
@@ -29,6 +32,10 @@ internal static class CardCatalog
         {
             foreach (var card in pool.AllCards)
             {
+                // The game's own library-visibility flag: hides cards that
+                // are invalid without event-side configuration (Mad Science's
+                // type is set by the Tinker Time event, not the card).
+                if (!card.ShouldShowInCardLibrary) continue;
                 var id = card.Id.ToString();
                 if (!seen.Add(id)) continue;
                 var cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.Canonical.ToString();

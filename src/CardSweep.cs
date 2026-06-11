@@ -49,6 +49,8 @@ internal static class CardSweep
         foreach (var pool in new CardPoolModel[]
         {
             ModelDb.CardPool<ColorlessCardPool>(),
+            ModelDb.CardPool<EventCardPool>(),
+            ModelDb.CardPool<QuestCardPool>(),
             ModelDb.CardPool<TokenCardPool>(),
             ModelDb.CardPool<StatusCardPool>(),
             ModelDb.CardPool<CurseCardPool>(),
@@ -132,6 +134,12 @@ internal static class CardSweep
                 // Hand: card under test + one fodder (discard-a-card costs).
                 // Discard pile: three fodder (Dredge-style pickers).
                 var card = pcs.DrawPile.Cards.First(c => c.GetType() == cardType);
+
+                // Mad Science's type is a saved property the Tinker Time
+                // event sets; a fresh copy has none and throws by design.
+                // Force a valid configuration so the play path is exercised.
+                if (card is MadScience ms)
+                    ms.TinkerTimeType = CardType.Attack;
                 pcs.DrawPile.RemoveInternal(card);
                 pcs.Hand.AddInternal(card);
                 foreach (var (fodder, idx) in pcs.DrawPile.Cards.ToList().Select((c, i) => (c, i)).Take(4))

@@ -216,6 +216,10 @@ internal static class Harness
             var dummyMonster = (MonsterModel)ModelDb.Monster<BigDummy>().ToMutable();
             var dummy = combat.CreateCreature(dummyMonster, CombatSide.Enemy, "slot1");
             combat.AddCreature(dummy);
+            // The dummy never takes a turn, but cards that manipulate enemy
+            // moves (Whistle's stun rewires the move state machine) NRE if it
+            // was never built.
+            dummyMonster.SetUpForCombat();
             enemies.Add(dummy);
         }
 
