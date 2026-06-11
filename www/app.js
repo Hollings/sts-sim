@@ -19,11 +19,8 @@ const minMax = arr => arr.reduce(
   [Infinity, -Infinity]
 );
 
-// Color a damage value on a red→yellow→green gradient relative to the run's range.
-function damageColor(y, min, max) {
-  if (max === min) return '#d4a142';
-  const t = (y - min) / (max - min); // 0 = worst, 1 = best
-  // bad (red 8b1913) → mid (yellow d4a142) → good (green 5fb04f)
+// bad (red 8b1913) → mid (yellow d4a142) → good (green 5fb04f), t in [0,1].
+function gradientAt(t) {
   if (t < 0.5) {
     const u = t * 2;
     return `rgb(${lerp(0x8b, 0xd4, u)},${lerp(0x19, 0xa1, u)},${lerp(0x13, 0x42, u)})`;
@@ -31,6 +28,32 @@ function damageColor(y, min, max) {
   const u = (t - 0.5) * 2;
   return `rgb(${lerp(0xd4, 0x5f, u)},${lerp(0xa1, 0xb0, u)},${lerp(0x42, 0x4f, u)})`;
 }
+
+// Color a damage value on the gradient relative to the run's range.
+function damageColor(y, min, max) {
+  if (max === min) return '#d4a142';
+  return gradientAt((y - min) / (max - min));
+}
+
+// Metric-aware value color. In score mode (boss fights) the win/loss boundary
+// at 0 is ALWAYS the anchor, never the run's relative range: losses shade
+// red→yellow as they approach 0, wins yellow→green as kept HP grows. A
+// relative gradient would paint the least-bad seed of an all-loss run green
+// ("good") and the lowest-HP win of an all-win run red ("bad") — both lies.
+function outcomeColor(y, min, max) {
+  if (metric !== 'score') return damageColor(y, min, max);
+  if (y < 0) {
+    const lo = Math.min(min, -1);
+    return gradientAt(Math.max(0, 0.5 * (y - lo) / (0 - lo)));
+  }
+  const hi = Math.max(max, 1);
+  return gradientAt(Math.min(1, 0.5 + 0.5 * y / hi));
+}
+
+// "WIN, 33 HP kept" / "LOSS, enemy at 45 HP" in score mode; "120 dmg" in dummy mode.
+const fmtOutcome = y => metric === 'score'
+  ? (y >= 0 ? `WIN, ${y} HP kept` : `LOSS, enemy at ${-y} HP`)
+  : `${y} dmg`;
 
 // Baseline is always slot 0 (muted blue); candidates/variant take the rest.
 const PHASE_COLORS = ['#6da4c4', '#d4a142', '#5fb04f', '#c75450', '#9d7bd8', '#e0884f', '#5fc4b8', '#c45f9e'];
@@ -99,6 +122,34 @@ function initCharts() {
     },
   };
 
+  // Score mode: dashed line at 0 — the win/loss boundary. The single most
+  // meaningful reference in a fight sim, so both the scatter and the running
+  // average draw it.
+  const winLossLinePlugin = {
+    id: 'winLossLine',
+    afterDatasetsDraw(chart) {
+      if (metric !== 'score') return;
+      const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+      const yPx = y.getPixelForValue(0);
+      if (yPx < y.top || yPx > y.bottom) return;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(199,84,80,0.7)';
+      ctx.setLineDash([6, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, yPx);
+      ctx.lineTo(right, yPx);
+      ctx.stroke();
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(95,176,79,0.9)';
+      ctx.fillText('win ↑', left + 4, yPx - 4);
+      ctx.fillStyle = 'rgba(199,84,80,0.9)';
+      ctx.fillText('loss ↓', left + 4, yPx + 12);
+      ctx.restore();
+    },
+  };
+
   const legendOpts = { display: false, labels: { boxWidth: 10, boxHeight: 10, font: { size: 11 } } };
 
   bestChart = new Chart($('chart-best'), {
@@ -113,10 +164,10 @@ function initCharts() {
       },
       plugins: {
         legend: { ...legendOpts },
-        tooltip: { callbacks: { label: c => `${c.dataset.label} seed ${c.parsed.x}: ${c.parsed.y} dmg` } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label} seed ${c.parsed.x}: ${fmtOutcome(c.parsed.y)}` } },
       },
     },
-    plugins: [meanLinePlugin],
+    plugins: [meanLinePlugin, winLossLinePlugin],
   });
 
   avgChart = new Chart($('chart-avg'), {
@@ -133,6 +184,7 @@ function initCharts() {
       },
       plugins: { legend: { ...legendOpts } },
     },
+    plugins: [winLossLinePlugin],
   });
 
   histChart = new Chart($('chart-hist'), {
@@ -199,10 +251,11 @@ function updateCharts() {
   phaseDefs.forEach((d, i) => {
     const s = seriesByPhase.get(d.key);
     bestChart.data.datasets[i].data = s.best;
-    // Single mode keeps the damage-gradient dots; multi-phase uses solid
-    // per-phase colors so the clouds are distinguishable.
+    // Single mode keeps the value-gradient dots (zero-anchored in score
+    // mode); multi-phase uses solid per-phase colors so the clouds are
+    // distinguishable.
     bestChart.data.datasets[i].pointBackgroundColor = single
-      ? s.best.map(p => damageColor(p.y, min, max))
+      ? s.best.map(p => outcomeColor(p.y, min, max))
       : d.color;
     avgChart.data.datasets[2 + i].data = s.avg;
   });
@@ -212,19 +265,28 @@ function updateCharts() {
   bestChart.update('none');
   avgChart.update('none');
 
-  // Histogram: shared buckets across all phases so the bars line up.
+  // Histogram: shared buckets across all phases so the bars line up. In
+  // score mode the bucket edges are aligned so 0 is an edge — no bar
+  // straddles the win/loss boundary, so the red/green split is honest.
   if (allYs.length > 1 && max > min) {
-    const buckets = 12;
-    const w = (max - min) / buckets;
+    let buckets = 12;
+    let lo = min;
+    let w = (max - lo) / buckets;
+    if (metric === 'score' && min < 0 && max > 0) {
+      lo = Math.floor(min / w) * w;
+      buckets = Math.ceil((max - lo) / w);
+    }
+    const signed = metric === 'score';
     const labels = [];
     const gradientColors = [];
     for (let i = 0; i < buckets; i++) {
-      labels.push(`${Math.round(min + i * w)}`);
-      gradientColors.push(damageColor(min + (i + 0.5) * w, min, max));
+      const edge = Math.round(lo + i * w);
+      labels.push(signed && edge > 0 ? `+${edge}` : `${edge}`);
+      gradientColors.push(outcomeColor(lo + (i + 0.5) * w, min, max));
     }
     const countUp = ys => {
       const counts = new Array(buckets).fill(0);
-      for (const y of ys) counts[Math.min(buckets - 1, Math.floor((y - min) / w))]++;
+      for (const y of ys) counts[Math.min(buckets - 1, Math.floor((y - lo) / w))]++;
       return counts;
     };
     histChart.data.labels = labels;
@@ -579,9 +641,12 @@ const eventHandlers = {
     configurePhases(e.mode || 'single', defs);
 
     // Metric-aware axis labels: damage ceiling vs fight outcome score.
-    const yLabel = metric === 'score' ? 'outcome (+HP kept / −boss HP)' : 'best damage';
+    const yLabel = metric === 'score' ? 'best outcome (+HP kept / −enemy HP)' : 'best damage';
     bestChart.options.scales.y.title.text = yLabel;
-    avgChart.options.scales.y.title.text = metric === 'score' ? 'avg outcome score' : 'avg-of-best damage';
+    avgChart.options.scales.y.title.text = metric === 'score' ? 'avg best outcome' : 'avg-of-best damage';
+    histChart.options.scales.x.title.text = metric === 'score'
+      ? 'outcome bucket (− loss · + win, HP)'
+      : 'damage bucket (per-seed best)';
 
     $('ab-panel').className = 'ab-panel hidden';
     $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
@@ -629,8 +694,8 @@ const eventHandlers = {
       if (baseDone && e.phase !== 'base')
         tiles.push(statTile('Current deck avg-of-best', `${fmt(baseDone.avgOfBest)} ± ${fmt(baseDone.ci95)}`));
       tiles.push(
-        statTile(`Running avg-of-best${phaseCount > 1 ? ` (${phaseDefs[phaseIdx].label})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
-        statTile('Last seed best', e.bestForSeed),
+        statTile(`Running avg${metric === 'score' ? ' outcome' : '-of-best'}${phaseCount > 1 ? ` (${phaseDefs[phaseIdx].label})` : ''}`, `${fmt(e.runningAvg)} ± ${fmt(e.ci95)}`),
+        statTile(metric === 'score' ? 'Last seed' : 'Last seed best', fmtOutcome(e.bestForSeed)),
       );
       if (metric === 'score' && e.winnableSeeds != null)
         tiles.push(statTile('Winnable seeds', `${e.winnableSeeds} / ${e.index + 1} (${(100 * e.winnableSeeds / (e.index + 1)).toFixed(0)}%)`));
@@ -652,16 +717,18 @@ const eventHandlers = {
     setVerdict('done', metric === 'score' && e.winRate != null
       ? `Done: ${(e.winRate * 100).toFixed(0)}% of seeds winnable · avg outcome ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)}`
       : `Done: ${fmt(e.avgOfBest)} ± ${fmt(e.ci95)} avg-of-best (${fmt(e.avgPerTurn)}/turn)`);
-    $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs · best seed: ${e.bestOfBest}, worst seed: ${e.worstSeedBest}`;
+    $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs · best seed: ${fmtOutcome(e.bestOfBest)} · worst seed: ${fmtOutcome(e.worstSeedBest)}`;
     const tiles = [
-      statTile('Avg-of-best', `${fmt(e.avgOfBest)} ± ${fmt(e.ci95)}`),
+      statTile(metric === 'score' ? 'Avg outcome' : 'Avg-of-best', `${fmt(e.avgOfBest)} ± ${fmt(e.ci95)}`),
     ];
     if (metric === 'score' && e.winRate != null)
       tiles.push(statTile('Winnable seeds', `${e.winnableSeeds} (${(e.winRate * 100).toFixed(0)}%)`));
     else
       tiles.push(statTile('Per turn', fmt(e.avgPerTurn)));
     tiles.push(
-      statTile('Best / worst seed', `${e.bestOfBest} / ${e.worstSeedBest}`),
+      statTile('Best / worst seed', metric === 'score'
+        ? `${sgn(e.bestOfBest)}${e.bestOfBest} / ${sgn(e.worstSeedBest)}${e.worstSeedBest}`
+        : `${e.bestOfBest} / ${e.worstSeedBest}`),
       statTile('Convergence (median K)', e.medianConvergenceK),
     );
     if (e.personalities?.length)
@@ -672,7 +739,7 @@ const eventHandlers = {
 
   abDone(e) {
     updateCharts();
-    setVerdict('done', `A/B done: lift ${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)} dmg`);
+    setVerdict('done', `A/B done: lift ${sgn(e.lift)}${fmt(e.lift)} ± ${fmt(e.liftCi95)} ${metric === 'score' ? 'score' : 'dmg'}`);
     $('status').textContent = `Completed in ${e.elapsedSec.toFixed(1)}s · ${e.totalRuns} runs total (paired over ${e.pairedSeeds} seeds)`;
 
     const panel = $('ab-panel');
