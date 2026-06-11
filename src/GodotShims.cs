@@ -174,6 +174,15 @@ internal static class GodotShims
             AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.PlayerCmd), "EndTurn"),
             prefix: new HarmonyMethod(GetPrefix(nameof(PlayerCmd_EndTurn_Prefix))));
 
+        // Hook.AfterDiedToDoom is NetId-gated: headless it returns before
+        // iterating listeners, silently disabling doom-death reactions (Book
+        // Repair Knife's heal-per-kill). Unlike turn-boundary hooks, this one
+        // fires mid-flow inside DoomPower.DoomKill where TurnHooks can't
+        // mirror it — so de-gate it here and run the listener loop ourselves.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterDiedToDoom"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(Hook_AfterDiedToDoom_Prefix))));
+
         // Knowledge Demon (and anything else forcing a "choose a card" screen)
         // calls CardSelectCmd.FromChooseACardScreen, which drives a UI flow.
         // Auto-pick the first option, mirroring AutoCardSelector's heuristic.
@@ -369,6 +378,25 @@ internal static class GodotShims
     {
         EndTurnRequested = true;
         return false;
+    }
+
+    private static bool Hook_AfterDiedToDoom_Prefix(
+        MegaCrit.Sts2.Core.Combat.CombatState combatState,
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Entities.Creatures.Creature> creatures,
+        ref Task __result)
+    {
+        if (MegaCrit.Sts2.Core.Context.LocalContext.NetId.HasValue)
+            return true; // real game session — run the original
+
+        __result = Run();
+        return false;
+
+        async Task Run()
+        {
+            foreach (var model in System.Linq.Enumerable.ToList(combatState.IterateHookListeners()))
+                await model.AfterDiedToDoom(
+                    new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext(), creatures);
+        }
     }
 
     private static bool NCombatRoom_Background_Prefix(ref MegaCrit.Sts2.Core.Nodes.Rooms.NCombatBackground? __result)

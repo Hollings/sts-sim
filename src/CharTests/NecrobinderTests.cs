@@ -167,6 +167,74 @@ internal static class NecrobinderTests
                         ?? TestHelpers.Expect(pcs.DiscardPile.Cards.Count, 1, "discard left")
                         ?? TestHelpers.Expect(pcs.ExhaustPile.Cards.OfType<Dredge>().Count(), 1, "Dredge exhausted");
                 }),
+
+            // ── Doom suite ────────────────────────────────────────────────
+            // Doom executes its owner at the end of the OWNER's side's turn
+            // when HP <= stacks. The enemy-side BeforeTurnEnd that triggers
+            // it is the same TurnHooks call EncounterSim's EnemyTurn makes.
+
+            await CharTestHelpers.Play1<Necrobinder, BlightStrike>(
+                "Blight Strike deals 8 and dooms for damage dealt",
+                (h, b) =>
+                    TestHelpers.Expect(b.dummyHp - h.Dummy.CurrentHp, 8, "damage")
+                    ?? TestHelpers.ExpectPower(h.Dummy, "DOOM", 8)),
+
+            await CharTestHelpers.Test<Necrobinder>(
+                "Doom executes at enemy turn end when HP <= stacks",
+                new List<Harness.DeckEntry> { new(typeof(BlightStrike)) },
+                async h =>
+                {
+                    Reflect.SetEnergy(h.Player.PlayerCombatState!, 9);
+                    await CharTestHelpers.PlayCard(h, CharTestHelpers.MoveToHand(h, typeof(BlightStrike))!);
+                    Reflect.SetCurrentHp(h.Dummy, 5); // inside the 8-stack threshold
+                    await TurnHooks.FireBeforeTurnEnd(h, MegaCrit.Sts2.Core.Combat.CombatSide.Enemy);
+                    return h.Dummy.IsAlive ? "dummy should be dead (HP 5 <= Doom 8)" : null;
+                }),
+
+            await CharTestHelpers.Test<Necrobinder>(
+                "Doom holds while HP above stacks",
+                new List<Harness.DeckEntry> { new(typeof(BlightStrike)) },
+                async h =>
+                {
+                    Reflect.SetEnergy(h.Player.PlayerCombatState!, 9);
+                    await CharTestHelpers.PlayCard(h, CharTestHelpers.MoveToHand(h, typeof(BlightStrike))!);
+                    Reflect.SetCurrentHp(h.Dummy, 50);
+                    await TurnHooks.FireBeforeTurnEnd(h, MegaCrit.Sts2.Core.Combat.CombatSide.Enemy);
+                    return h.Dummy.IsAlive ? null : "dummy died with HP 50 > Doom 8";
+                }),
+
+            // Countdown ticks via AfterSideTurnStart: +N Doom to a random
+            // enemy at every player turn start.
+            await CharTestHelpers.Test<Necrobinder>(
+                "Countdown applies Doom 6 at player turn start",
+                new List<Harness.DeckEntry> { new(typeof(Countdown)) },
+                async h =>
+                {
+                    Reflect.SetEnergy(h.Player.PlayerCombatState!, 9);
+                    await CharTestHelpers.PlayCard(h, CharTestHelpers.MoveToHand(h, typeof(Countdown))!);
+                    await TurnHooks.FireAfterSideTurnStart(h, MegaCrit.Sts2.Core.Combat.CombatSide.Player);
+                    return TestHelpers.ExpectPower(h.Dummy, "DOOM", 6);
+                }),
+
+            // Doom-death reactions go through Hook.AfterDiedToDoom, which is
+            // NetId-gated in the game — guarded here via the de-gating shim.
+            await CharTestHelpers.Test<Necrobinder>(
+                "Book Repair Knife heals 3 on a doom kill",
+                new List<Harness.DeckEntry> { new(typeof(BlightStrike)) },
+                async h =>
+                {
+                    Reflect.SetEnergy(h.Player.PlayerCombatState!, 9);
+                    var knife = (MegaCrit.Sts2.Core.Models.RelicModel)
+                        MegaCrit.Sts2.Core.Models.ModelDb.Relic<MegaCrit.Sts2.Core.Models.Relics.BookRepairKnife>().ToMutable();
+                    h.Player.AddRelicInternal(knife, silent: true);
+                    Reflect.SetCurrentHp(h.Player.Creature, h.Player.Creature.MaxHp - 10);
+                    await CharTestHelpers.PlayCard(h, CharTestHelpers.MoveToHand(h, typeof(BlightStrike))!);
+                    Reflect.SetCurrentHp(h.Dummy, 5);
+                    var hpBefore = h.Player.Creature.CurrentHp;
+                    await TurnHooks.FireBeforeTurnEnd(h, MegaCrit.Sts2.Core.Combat.CombatSide.Enemy);
+                    if (h.Dummy.IsAlive) return "dummy should be dead";
+                    return TestHelpers.Expect(h.Player.Creature.CurrentHp - hpBefore, 3, "knife heal");
+                }),
         };
 
         return results;

@@ -61,6 +61,11 @@ internal static class Reflect
     public static void HealToFull(Creature creature)
         => CreatureCurrentHp.SetValue(creature, creature.MaxHp);
 
+    /// <summary>Test scaffolding: place a creature at an exact HP (e.g. inside
+    /// a Doom threshold) without routing through the damage pipeline.</summary>
+    public static void SetCurrentHp(Creature creature, int hp)
+        => CreatureCurrentHp.SetValue(creature, hp);
+
     private static readonly FieldInfo MonsterRunRngField =
         typeof(MonsterModel).GetField("_runRng", BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException("MonsterModel._runRng not found");
