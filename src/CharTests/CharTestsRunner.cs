@@ -27,6 +27,7 @@ internal static class CharTestsRunner
             ("Defect - Orbs & Focus",        DefectTests.RunAll),
             ("Necrobinder - Osty & Souls",   NecrobinderTests.RunAll),
             ("Regent - Stars & Forge",       RegentTests.RunAll),
+            ("Enchantments",                 EnchantmentTests.RunAll),
         };
 
         var all = new List<(string Bucket, TestHelpers.TestResult Result)>();

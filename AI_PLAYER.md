@@ -136,6 +136,10 @@ forward with the real game rules:
   the live energy but 0 stars.
 - **Power internal state** beyond stack count (e.g. a power that remembered
   something from two turns ago) is not reconstructed.
+- **Card enchantments ARE reconstructed** (the schema accepts an optional
+  `enchantment: {id, amount}` per card and the mirror applies it through the
+  game's own EnchantInternal) — but snecko-eye doesn't emit the field yet,
+  so live mirrors run unenchanted until its reader adds it.
 - **Card-level mutations** (Claw/Kingly Punch grown damage, Forged blades)
   reset to base; the schema would need per-card current values.
 - The play policy inside rollouts is the benchmarked race policy — the same

@@ -40,6 +40,15 @@ public sealed class AdviseRequest
     {
         [JsonPropertyName("id")] public string? Id { get; set; }
         [JsonPropertyName("upgraded")] public bool Upgraded { get; set; }
+        /// <summary>Optional card enchantment (Instinct, Sharp, ...). Not yet
+        /// emitted by snecko-eye — when absent the card mirrors unenchanted.</summary>
+        [JsonPropertyName("enchantment")] public EnchantRef? Enchantment { get; set; }
+    }
+
+    public sealed class EnchantRef
+    {
+        [JsonPropertyName("id")] public string? Id { get; set; }
+        [JsonPropertyName("amount")] public int Amount { get; set; }
     }
 
     public sealed class CombatBlock
@@ -62,6 +71,7 @@ public sealed class AdviseRequest
         [JsonPropertyName("upgraded")] public bool Upgraded { get; set; }
         [JsonPropertyName("playable")] public bool Playable { get; set; } = true;
         [JsonPropertyName("target_type")] public string? TargetType { get; set; }
+        [JsonPropertyName("enchantment")] public EnchantRef? Enchantment { get; set; }
     }
 
     public sealed class PowerRef

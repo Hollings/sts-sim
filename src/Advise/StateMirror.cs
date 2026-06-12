@@ -42,11 +42,11 @@ internal static class StateMirror
         // ── Combat deck = hand ∪ discard ∪ exhaust ∪ inferred draw. The live
         // API exposes the draw pile's count but not its contents, so the draw
         // set is deck − (hand ∪ discard ∪ exhaust) as a multiset.
-        var hand = combat.Hand.Select(c => (Id: c.Id ?? "", Up: c.Upgraded)).ToList();
-        var discard = combat.DiscardPile.Select(c => (Id: c.Id ?? "", Up: c.Upgraded)).ToList();
-        var exhaust = combat.ExhaustPile.Select(c => (Id: c.Id ?? "", Up: c.Upgraded)).ToList();
+        var hand = combat.Hand.Select(c => ToKey(c.Id, c.Upgraded, c.Enchantment)).ToList();
+        var discard = combat.DiscardPile.Select(c => ToKey(c.Id, c.Upgraded, c.Enchantment)).ToList();
+        var exhaust = combat.ExhaustPile.Select(c => ToKey(c.Id, c.Upgraded, c.Enchantment)).ToList();
         var masterDeck = (live.Deck ?? new List<AdviseRequest.CardRef>())
-            .Select(c => (Id: c.Id ?? "", Up: c.Upgraded)).ToList();
+            .Select(c => ToKey(c.Id, c.Upgraded, c.Enchantment)).ToList();
 
         var inferredDraw = MultisetSubtract(masterDeck, hand.Concat(discard).Concat(exhaust));
         if (inferredDraw.Count != combat.DrawPileCount)
@@ -54,11 +54,11 @@ internal static class StateMirror
                       "(mid-combat generated/removed cards can't be reconstructed from counts)");
 
         var deckOverride = new List<Harness.DeckEntry>();
-        foreach (var (id, up) in hand.Concat(discard).Concat(exhaust).Concat(inferredDraw))
+        foreach (var key in hand.Concat(discard).Concat(exhaust).Concat(inferredDraw))
         {
-            var type = CardIdResolver.Resolve(id);
-            if (type == null) { notes.Add($"unknown card id '{id}' skipped"); continue; }
-            deckOverride.Add(new Harness.DeckEntry(type, up ? 1 : 0));
+            var type = CardIdResolver.Resolve(key.Id);
+            if (type == null) { notes.Add($"unknown card id '{key.Id}' skipped"); continue; }
+            deckOverride.Add(new Harness.DeckEntry(type, key.Up ? 1 : 0, key.EnchId, key.EnchAmt));
         }
 
         // ── Spin up the combat: real character, live relic list, live enemy
@@ -79,12 +79,12 @@ internal static class StateMirror
 
         // ── Piles: pull the listed hand/discard/exhaust cards out of the
         // shuffled draw pile by identity; what remains IS the draw pile.
-        foreach (var (id, up) in hand)
-            MoveTo(h, id, up, c => { pcs.DrawPile.RemoveInternal(c); pcs.Hand.AddInternal(c); }, notes, "hand");
-        foreach (var (id, up) in discard)
-            MoveTo(h, id, up, c => { pcs.DrawPile.RemoveInternal(c); pcs.DiscardPile.AddInternal(c); }, notes, "discard");
-        foreach (var (id, up) in exhaust)
-            MoveTo(h, id, up, c => { pcs.DrawPile.RemoveInternal(c); pcs.ExhaustPile.AddInternal(c); }, notes, "exhaust");
+        foreach (var key in hand)
+            MoveTo(h, key, c => { pcs.DrawPile.RemoveInternal(c); pcs.Hand.AddInternal(c); }, notes, "hand");
+        foreach (var key in discard)
+            MoveTo(h, key, c => { pcs.DrawPile.RemoveInternal(c); pcs.DiscardPile.AddInternal(c); }, notes, "discard");
+        foreach (var key in exhaust)
+            MoveTo(h, key, c => { pcs.DrawPile.RemoveInternal(c); pcs.ExhaustPile.AddInternal(c); }, notes, "exhaust");
 
         // ── Player vitals + resources. RoundNumber matters: block-clear and
         // "first turn" gates key off it in later rollout turns.
@@ -166,23 +166,30 @@ internal static class StateMirror
         else if (applied.Amount != (int)pw.Stacks) Reflect.SetPowerAmount(applied, (int)pw.Stacks);
     }
 
+    private readonly record struct CardKey(string Id, bool Up, string? EnchId, int EnchAmt);
+
+    private static CardKey ToKey(string? id, bool upgraded, AdviseRequest.EnchantRef? ench)
+        => new(id ?? "", upgraded, ench?.Id, ench?.Amount ?? 0);
+
     private static void MoveTo(
-        Harness.CombatHarness h, string id, bool upgraded,
+        Harness.CombatHarness h, CardKey key,
         Action<MegaCrit.Sts2.Core.Models.CardModel> move, List<string> notes, string pile)
     {
         var pcs = h.Player.PlayerCombatState!;
-        int wantLevel = upgraded ? 1 : 0;
+        int wantLevel = key.Up ? 1 : 0;
         var card = pcs.DrawPile.Cards.FirstOrDefault(c =>
-                c.Id.ToString() == id && c.CurrentUpgradeLevel == wantLevel)
-            ?? pcs.DrawPile.Cards.FirstOrDefault(c => c.Id.ToString() == id);
-        if (card == null) { notes.Add($"could not place '{id}' into {pile}"); return; }
+                c.Id.ToString() == key.Id && c.CurrentUpgradeLevel == wantLevel
+                && c.Enchantment?.Id.ToString() == key.EnchId)
+            ?? pcs.DrawPile.Cards.FirstOrDefault(c =>
+                c.Id.ToString() == key.Id && c.CurrentUpgradeLevel == wantLevel)
+            ?? pcs.DrawPile.Cards.FirstOrDefault(c => c.Id.ToString() == key.Id);
+        if (card == null) { notes.Add($"could not place '{key.Id}' into {pile}"); return; }
         move(card);
     }
 
-    private static List<(string Id, bool Up)> MultisetSubtract(
-        IEnumerable<(string Id, bool Up)> from, IEnumerable<(string Id, bool Up)> remove)
+    private static List<CardKey> MultisetSubtract(IEnumerable<CardKey> from, IEnumerable<CardKey> remove)
     {
-        var counts = new Dictionary<(string, bool), int>();
+        var counts = new Dictionary<CardKey, int>();
         foreach (var k in from)
         {
             counts.TryGetValue(k, out var n);
@@ -192,9 +199,9 @@ internal static class StateMirror
         {
             if (counts.TryGetValue(k, out var n) && n > 0) counts[k] = n - 1;
         }
-        var result = new List<(string, bool)>();
-        foreach (var ((id, up), n) in counts)
-            for (int i = 0; i < n; i++) result.Add((id, up));
+        var result = new List<CardKey>();
+        foreach (var (key, n) in counts)
+            for (int i = 0; i < n; i++) result.Add(key);
         return result;
     }
 }

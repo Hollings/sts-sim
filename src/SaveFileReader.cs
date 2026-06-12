@@ -26,7 +26,9 @@ internal static class SaveFileReader
         public IReadOnlyList<string> Relics { get; init; } = Array.Empty<string>();
     }
 
-    public sealed record DeckCard(string Id, int FloorAdded, int UpgradeLevel = 0);
+    public sealed record DeckCard(
+        string Id, int FloorAdded, int UpgradeLevel = 0,
+        string? EnchantmentId = null, int EnchantmentAmount = 0);
 
     /// <summary>
     /// Find the freshest current_run*.save across both modded and unmodded profiles,
@@ -75,7 +77,9 @@ internal static class SaveFileReader
             SourcePath = path,
             Modified = File.GetLastWriteTime(path),
             CharacterId = p.CharacterId ?? "<unknown>",
-            Cards = (p.Deck ?? new()).Select(c => new DeckCard(c.Id ?? "", c.FloorAddedToDeck, c.CurrentUpgradeLevel)).ToList(),
+            Cards = (p.Deck ?? new()).Select(c => new DeckCard(
+                c.Id ?? "", c.FloorAddedToDeck, c.CurrentUpgradeLevel,
+                c.Enchantment?.Id, c.Enchantment?.Amount ?? 0)).ToList(),
             CurrentHp = p.CurrentHp,
             MaxHp = p.MaxHp,
             Gold = p.Gold,
@@ -129,6 +133,15 @@ internal static class SaveFileReader
         [JsonPropertyName("id")] public string? Id { get; set; }
         [JsonPropertyName("floor_added_to_deck")] public int FloorAddedToDeck { get; set; }
         [JsonPropertyName("current_upgrade_level")] public int CurrentUpgradeLevel { get; set; }
+        // Card enchantments (Instinct, Sharp, ...) — same shape the game's
+        // SerializableEnchantment writes. Dropping these sims the wrong deck.
+        [JsonPropertyName("enchantment")] public EnchantJson? Enchantment { get; set; }
+    }
+
+    private sealed class EnchantJson
+    {
+        [JsonPropertyName("id")] public string? Id { get; set; }
+        [JsonPropertyName("amount")] public int Amount { get; set; }
     }
 
     private sealed class RelicJson

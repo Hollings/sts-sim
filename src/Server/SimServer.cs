@@ -167,14 +167,17 @@ internal sealed class SimServer
             Send(ctx, 404, "application/json", "{\"error\":\"no save file found\"}");
             return;
         }
-        // Group cards by (id, upgradeLevel) so upgraded copies show separately.
+        // Group cards by (id, upgradeLevel, enchantment) so upgraded and
+        // enchanted copies show separately.
         var grouped = deck.Cards
-            .GroupBy(c => (c.Id, c.UpgradeLevel))
+            .GroupBy(c => (c.Id, c.UpgradeLevel, c.EnchantmentId))
             .Select(g => new
             {
                 id = g.Key.Id,
                 upgrade = g.Key.UpgradeLevel,
-                name = CardLabels.Format(g.Key.Id, g.Key.UpgradeLevel),
+                name = CardLabels.Format(g.Key.Id, g.Key.UpgradeLevel)
+                    + (g.Key.EnchantmentId != null ? $" ✦{CardLabels.PrettyName(g.Key.EnchantmentId)}" : ""),
+                enchantment = g.Key.EnchantmentId,
                 count = g.Count(),
             })
             .OrderByDescending(x => x.count).ThenBy(x => x.id).ThenBy(x => x.upgrade)
@@ -375,7 +378,7 @@ internal sealed class SimServer
         => cards.Select(c =>
         {
             var t = CardIdResolver.Resolve(c.Id) ?? throw new ArgumentException($"Unknown card id '{c.Id}'");
-            return new Harness.DeckEntry(t, c.UpgradeLevel);
+            return new Harness.DeckEntry(t, c.UpgradeLevel, c.EnchantmentId, c.EnchantmentAmount);
         }).ToList();
 
     /// <summary>Apply remove/add requests to the save-file deck to produce the variant.</summary>
@@ -389,7 +392,12 @@ internal sealed class SimServer
         {
             for (int n = 0; n < Math.Max(1, rem.Count); n++)
             {
-                var idx = result.FindIndex(c => c.Id == rem.Id && c.UpgradeLevel == rem.Upgrade);
+                // Prefer removing an unenchanted copy — removal requests key
+                // on (id, upgrade) only, and nobody removes their Instinct
+                // Strike before a plain one.
+                var idx = result.FindIndex(c => c.Id == rem.Id && c.UpgradeLevel == rem.Upgrade && c.EnchantmentId == null);
+                if (idx < 0)
+                    idx = result.FindIndex(c => c.Id == rem.Id && c.UpgradeLevel == rem.Upgrade);
                 if (idx < 0)
                     throw new ArgumentException($"Cannot remove '{rem.Id}' (upgrade {rem.Upgrade}): not (or no longer) in deck");
                 result.RemoveAt(idx);

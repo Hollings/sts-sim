@@ -74,8 +74,10 @@ internal static class Harness
         public required PlayerChoiceContext Ctx { get; init; }
     }
 
-    /// <summary>One card in a deck override: the C# type plus optional upgrade level.</summary>
-    public sealed record DeckEntry(Type CardType, int UpgradeLevel = 0);
+    /// <summary>One card in a deck override: the C# type plus optional upgrade
+    /// level and enchantment (e.g. ENCHANTMENT.INSTINCT doubles powered attack
+    /// damage — dropping it would sim a materially weaker deck).</summary>
+    public sealed record DeckEntry(Type CardType, int UpgradeLevel = 0, string? EnchantmentId = null, int EnchantmentAmount = 0);
 
     /// <summary>Sugar so callers with a plain List&lt;Type&gt; don't have to map themselves.</summary>
     public static IReadOnlyList<DeckEntry> AsEntries(IEnumerable<Type> types)
@@ -280,6 +282,20 @@ internal static class Harness
             {
                 copy.UpgradeInternal();
                 copy.FinalizeUpgradeInternal();
+            }
+            // Apply the enchantment exactly like CardModel.FromSerializable:
+            // EnchantInternal attaches it, ModifyCard lets it rewrite the
+            // card's stats (Instinct's damage doubling, cost changes, etc.).
+            if (!string.IsNullOrEmpty(entry.EnchantmentId))
+            {
+                var canonicalEnchant = ModelDb.GetByIdOrNull<EnchantmentModel>(ModelId.Deserialize(entry.EnchantmentId));
+                if (canonicalEnchant != null)
+                {
+                    var enchant = (EnchantmentModel)canonicalEnchant.ToMutable();
+                    enchant.Amount = entry.EnchantmentAmount;
+                    copy.EnchantInternal(enchant, entry.EnchantmentAmount);
+                    copy.Enchantment!.ModifyCard();
+                }
             }
             // Owner must be set BEFORE the card lands in any pile, otherwise the
             // CardModel.Pile property (which derives from owner.Piles.Find) returns
