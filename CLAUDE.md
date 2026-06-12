@@ -335,9 +335,13 @@ Underdocks, the alternate act-1 biome that ActModel.GetDefaultList() omits
 
 1. ~~**Per-turn play enumeration**~~ DONE: `TurnPlanPolicy` (the "planner"
    brain) — whole-turn play-set search with a static damage model (knapsack,
-   Inflame/Bash ordering, focus-fire targets). Bench-validated at +1.2pts
-   aggregate win rate, +13pts on scaling decks. Always ε-wrap it (see ruled-out
-   table). Model gaps to extend someday: X-cost scaling, draw-value, AoE vuln.
+   Inflame/Bash ordering, focus-fire targets, and PRICED Vulnerable carryover:
+   future vuln turns are worth half a future turn's estimated output, capped
+   by the enemy's surviving HP — so kill-now vs bank-Vulnerable is computed,
+   not a rule; both sides pinned in PlannerTests). Bench-validated: 60.1% →
+   61.2% aggregate, scaling vs Ceremonial Beast 31% → 46%. Always ε-wrap it
+   (see ruled-out table). Model gaps to extend someday: X-cost scaling,
+   draw-value, AoE vuln, Weak on the player.
 2. ~~**Smarter base policy generally**~~ — covered by #1.
 3. **Subprocess parallelism**: ~6x throughput. Don't bother until the planner
    feels slow at thorough presets.

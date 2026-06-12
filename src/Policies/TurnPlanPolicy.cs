@@ -106,7 +106,10 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
 
     private sealed record Spec(
         CardModel Card, int Cost, decimal Damage, int Hits,
-        bool AppliesVuln, decimal StrengthGrant, bool IsAoe);
+        decimal VulnStacks, decimal StrengthGrant, bool IsAoe)
+    {
+        public bool AppliesVuln => VulnStacks > 0;
+    }
 
     private void ComputePlan(Harness.CombatHarness h, int energy, HashSet<CardModel>? exclude = null)
     {
@@ -127,6 +130,12 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
         if (enemies.Count == 0) return;
 
         decimal playerStrength = h.Player.Creature.GetPowerAmount<StrengthPower>();
+
+        // Expected damage output of a FUTURE turn, for pricing carryover
+        // debuffs: max energy × the deck's average attack damage per energy.
+        // Rough on purpose — it's a tiebreaker between "kill now" and "set up
+        // Vulnerable for next turn", not a forecast.
+        decimal futureTurnDamage = EstimateFutureTurnDamage(h, playerStrength);
 
         // Duplicate cards are interchangeable — branch over distinct groups
         // with counts, not individual copies.
@@ -150,7 +159,7 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
                 evaluations++;
                 for (int f = 0; f < enemies.Count; f++)
                 {
-                    var score = Evaluate(current, enemies, f, playerStrength);
+                    var score = Evaluate(current, enemies, f, playerStrength, futureTurnDamage);
                     if (score > bestScore || (score == bestScore && energyLeft > bestLeftover))
                     {
                         bestScore = score;
@@ -195,15 +204,21 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
 
     /// <summary>
     /// Score a play set against a chosen focus enemy: total EFFECTIVE damage
-    /// (clamped per enemy — overkill is worthless), with Strength added per
-    /// hit and ×1.5 once Vulnerable is up. AoE cards hit everyone; single-
-    /// target damage all lands on the focus.
+    /// this turn (clamped per enemy — overkill is worthless), with Strength
+    /// added per hit and ×1.5 once Vulnerable is up, PLUS the priced value of
+    /// Vulnerable stacks that outlive the turn: each future vuln turn is
+    /// worth half a future turn's expected output (the ×1.5 bonus), capped by
+    /// the enemy's surviving HP — a dead or nearly-dead enemy makes setup
+    /// worthless, so "kill now vs Bash for next turn" is a computed tradeoff,
+    /// not a rule. AoE cards hit everyone; single-target damage all lands on
+    /// the focus.
     /// </summary>
     private static decimal Evaluate(
         List<Spec> subset,
         List<(decimal Hp, bool Vuln, Creature Creature)> enemies,
         int focusIdx,
-        decimal baseStrength)
+        decimal baseStrength,
+        decimal futureTurnDamage)
     {
         decimal strength = baseStrength + subset.Sum(s => s.StrengthGrant);
         bool focusVuln = enemies[focusIdx].Vuln;
@@ -244,14 +259,50 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
             else
                 Land(focusIdx, HitFor(s, focusVuln));
         }
+
+        // Carryover: Vulnerable stacks beyond this turn keep paying ×1.5 on
+        // future turns. One stack is consumed by the current turn; each
+        // remaining stack is worth half a future turn's output, but never
+        // more than half the HP the enemy has left (you can't bonus-damage
+        // a corpse).
+        var appliedStacks = subset.Where(s => s.AppliesVuln).Sum(s => s.VulnStacks);
+        if (appliedStacks > 0 && remaining[focusIdx] > 0)
+        {
+            var futureVulnTurns = Math.Max(0, appliedStacks - 1);
+            var carryover = Math.Min(
+                futureVulnTurns * futureTurnDamage * 0.5m,
+                remaining[focusIdx] * 0.5m);
+            total += carryover;
+        }
         return total;
+    }
+
+    /// <summary>
+    /// Average attack damage per energy across the whole combat deck, scaled
+    /// to a full turn's energy — the "what is a future turn worth" estimate
+    /// behind the Vulnerable carryover price.
+    /// </summary>
+    private static decimal EstimateFutureTurnDamage(Harness.CombatHarness h, decimal strength)
+    {
+        decimal dmgSum = 0, costSum = 0;
+        foreach (var card in h.Player.PlayerCombatState!.AllCards)
+        {
+            if (card.Type != CardType.Attack) continue;
+            if (!card.DynamicVars.TryGetValue("Damage", out var dv)) continue;
+            int hits = card.DynamicVars.TryGetValue("Repeat", out var rv)
+                ? Math.Max(1, ((RepeatVar)rv).IntValue) : 1;
+            dmgSum += (((DamageVar)dv).BaseValue + strength) * hits;
+            costSum += Math.Max(1, card.EnergyCost.Canonical);
+        }
+        if (costSum <= 0) return 0;
+        return dmgSum / costSum * Math.Max(1, h.Player.MaxEnergy);
     }
 
     private static Spec Describe(CardModel card)
     {
         decimal damage = 0;
         int hits = 1;
-        bool vuln = false;
+        decimal vulnStacks = 0;
         decimal strength = 0;
 
         if (card.DynamicVars.TryGetValue("Damage", out var dmgVar) && card.Type == CardType.Attack)
@@ -259,14 +310,14 @@ internal sealed class TurnPlanPolicy : IPlayPolicy, ITargetingPolicy
         if (card.DynamicVars.TryGetValue("Repeat", out var repVar))
             hits = Math.Max(1, ((RepeatVar)repVar).IntValue);
         if (card.DynamicVars.TryGetValue("VulnerablePower", out var vVar))
-            vuln = vVar.BaseValue > 0;
+            vulnStacks = Math.Max(0, vVar.BaseValue);
         if (card.DynamicVars.TryGetValue("StrengthPower", out var sVar) && card.TargetType == TargetType.Self)
             strength = sVar.BaseValue;
 
         return new Spec(
             card,
             Math.Max(0, card.EnergyCost.GetAmountToSpend()),
-            damage, hits, vuln, strength,
+            damage, hits, vulnStacks, strength,
             card.TargetType == TargetType.AllEnemies);
     }
 }
