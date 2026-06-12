@@ -407,8 +407,10 @@ function updateRunSummary() {
     : hasChanges() ? 'A/B: current deck vs edited'
     : sel.value ? 'Fight sim: current deck' : 'Damage sim: current deck';
   const edits = describeChanges();
+  const brain = $('cfg-brain').value;
+  const brainTxt = brain === 'fast' ? '' : ` · ${brain} brain`;
   $('run-summary').innerHTML =
-    `<b>${escapeHtml(q)}</b> vs ${escapeHtml(opp)}${edits ? ` · ${escapeHtml(edits)}` : ''}`;
+    `<b>${escapeHtml(q)}</b> vs ${escapeHtml(opp)}${edits ? ` · ${escapeHtml(edits)}` : ''}${escapeHtml(brainTxt)}`;
 }
 
 $('deck-cards').addEventListener('click', ev => {
@@ -562,6 +564,7 @@ $('cfg-preset').addEventListener('change', () => {
 });
 for (const id of ['cfg-seeds', 'cfg-k', 'cfg-patience'])
   $(id).addEventListener('change', syncPresetUi);
+$('cfg-brain').addEventListener('change', updateRunSummary);
 
 async function loadCardCatalog() {
   try {
@@ -652,7 +655,7 @@ const eventHandlers = {
     $('best-combat').innerHTML = '<div class="empty">Searching for the best combat…</div>';
     $('best-headline').textContent = '';
     const vsTxt = metric === 'score' ? ` vs ${e.encounterName}` : '';
-    const cfg = `${e.seeds} seeds × K=${e.k}${e.patience ? ` (patience ${e.patience})` : ''}, ${e.turns} turns, ε=${e.epsilon}`;
+    const cfg = `${e.seeds} seeds × K=${e.k}${e.patience ? ` (patience ${e.patience})` : ''}, ${e.turns} turns, ε=${e.epsilon}${e.brain && e.brain !== 'fast' ? `, ${e.brain} brain` : ''}`;
     const head = e.mode === 'compare'
       ? `Compare${vsTxt}: ${e.candidates.join(' vs ')}${e.changeSummary ? ` (on top of ${e.changeSummary})` : ''}`
       : e.mode === 'ab' ? `A/B${vsTxt}: ${e.changeSummary || 'deck edit'}`
@@ -873,7 +876,7 @@ function renderBestCombat(e) {
 
 // ─── Config persistence ──────────────────────────────────────────────────
 
-const CFG_IDS = ['cfg-seeds', 'cfg-k', 'cfg-patience', 'cfg-turns', 'cfg-eps'];
+const CFG_IDS = ['cfg-seeds', 'cfg-k', 'cfg-patience', 'cfg-turns', 'cfg-eps', 'cfg-brain'];
 function restoreConfig() {
   for (const id of CFG_IDS) {
     const saved = localStorage.getItem(`sts2sim.${id}`);
@@ -891,6 +894,7 @@ $('run-btn').onclick = async () => {
     patience: +$('cfg-patience').value,
     turns: +$('cfg-turns').value,
     epsilon: +$('cfg-eps').value,
+    brain: $('cfg-brain').value,
     encounterId: $('cfg-encounter').value || null,
     ...changesPayload(),
   };

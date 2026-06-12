@@ -115,7 +115,7 @@ All wrapped in `Harness.Bootstrap()` (one-time) + `Harness.BeginCombat<TCharacte
 | `TurnHooks.cs` | `FireAfterTurnEnd(harness, side)` — manual listener iteration for end-of-turn power ticks (the official `Hook.AfterTurnEnd` requires `LocalContext.NetId` we don't have). |
 | `SmokeTests.cs` | Assertion-based tests: Strike=6, Bash applies Vulnerable, Inflame +Strength → Strike does 8, etc. **Run these first if anything seems off** (`dotnet run -- smoke`). |
 | `DamagePerTurnSim.cs` | One trial = run N turns of "fill hand → play cards via policy → end turn". `RunSingleTrial(seed)` is the brick. Per-turn body is `RunSingleTurn`; play loop is `PlayPhase`, which debits via the game's own `card.SpendResources()` (X-cost capture, 0-cost-at-0-energy, AfterEnergySpent hook all correct). |
-| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`, `ThresholdPolicy(t)` (race until incoming damage would drop HP below t×maxHP, then stack block — t<0 never defends, ∞ turtles). `Playable` is two-tier: cheap screen (Unplayable keyword + cost) over the whole hand, the game's full `CanPlay()` (hook listeners) only on the final pick via `ChooseFrom` — calling CanPlay per hand card per pick cost ~3x throughput. |
+| `Policies/IPlayPolicy.cs` + `Policies/*.cs` | One file per policy: `GreedyAttackPolicy`, `HighestDamagePolicy`, `RandomPolicy`, `EpsilonGreedyPolicy(base, ε)`, `ThresholdPolicy(t)` (race until incoming damage would drop HP below t×maxHP, then stack block — t<0 never defends, ∞ turtles), and `TurnPlanPolicy` (the "planner" brain: whole-turn play-set search — energy knapsack, Inflame/Bash ordering, focus-fire targets via `ITargetingPolicy`; static damage model, racing objective). `Playable` is two-tier: cheap screen (Unplayable keyword + cost) over the whole hand, the game's full `CanPlay()` (hook listeners) only on the final pick via `ChooseFrom` — calling CanPlay per hand card per pick cost ~3x throughput. |
 | `IntentReader.cs` | Telegraphed incoming damage for the current round, read the same way the intent UI does (NextMove.Intents) but with Hook.ModifyDamage run against OUR player — the game's own path resolves the player via netcode and silently falls back to base damage headless. |
 | `PolicyBench.cs` | Policy uplift benchmark (`dotnet run -- policy-bench`): pinned decks × encounters, race-only vs candidate policy setups on identical seeds, win-rate/score deltas + per-personality seed attribution. Win rate is a lower bound, so any uplift on same seeds = strictly more accurate. Run this before changing any play policy default. |
 | `BestOfKRunner.cs` | The recommended algorithm. Per-seed: K samples, keep max. Average those across N seeds. Reports `avg-of-best ± 95% CI`. `Patience > 0` early-stops a seed after that many samples without improvement. `Summary.PerSeedBests` enables paired A/B tests. |
@@ -302,6 +302,7 @@ Underdocks, the alternate act-1 biome that ActModel.GetDefaultList() omits
 | "Best ever damage" as deck quality metric | Measures luckiest shuffle, not deck quality. All policies hit the same max within seconds — no discrimination. |
 | MCTS | Solves "best play for fixed seed" — not the deck-comparison question. Lock-in concern is real but ε-greedy sidesteps it via uniform exploration. Worth revisiting if we ever do TAS-style "optimal play for known seed". |
 | Bigger K instead of better policy | Marginal gains past K=100 on simple decks; can't escape the bias from pure-random base on setup decks. |
+| Deterministic planner WITHOUT ε under best-of-K | The planner brain bare lost the bench 60.1%→52.9% — not from bad play, but because all K samples of a seed replay the identical line (best-of-K degenerates to K=1). ε-wrapped (0.15-0.2) the same planner WINS 60.1%→61.3%, with +13pts on scaling vs Ceremonial Beast. Lesson: any deterministic brain must be ε-wrapped to harvest the K budget. |
 | Threshold-portfolio play policies for boss fights | Built and benchmarked June 2026 (`ThresholdPolicy` + `BestOfKRunner.Portfolio` + `policy-bench`). Hypothesis: splitting K across race/thr15/thr50/turtle personalities samples defensive lines deliberately instead of by ε-lottery. Result: FALSIFIED as a default. Defensive personalities only pad scores in already-lost fights; wherever wins are reachable, diluting the race policy's sample budget lowers win rates (scaling deck vs Ceremonial Beast: 31% → 16% at 50/50 split). "Tank the hit, get the attack in" is the dominant strategy — the race policy was already playing correctly. Machinery kept for experiments; race-only stays the default. |
 
 ## Useful invariants
@@ -332,12 +333,14 @@ Underdocks, the alternate act-1 biome that ActModel.GetDefaultList() omits
 "Things we tested and ruled out"). The pieces (`ThresholdPolicy`, `IntentReader`,
 `Portfolio`, `policy-bench`) remain for experiments.
 
-1. **Per-turn play enumeration**: exhaustively order the hand within a turn
-   (small space at 5-7 cards / 3 energy) and score leaves by outcome — replaces
-   the policy question at the turn level. Validate with `policy-bench`.
-2. **Smarter base policy generally**: "play Powers turn 1", "Vulnerable before
-   attacking". Could shrink ε-needed and tighten CI. Validate with `policy-bench`.
-3. **Subprocess parallelism**: ~6x throughput. Don't bother until #1-2 feel slow.
+1. ~~**Per-turn play enumeration**~~ DONE: `TurnPlanPolicy` (the "planner"
+   brain) — whole-turn play-set search with a static damage model (knapsack,
+   Inflame/Bash ordering, focus-fire targets). Bench-validated at +1.2pts
+   aggregate win rate, +13pts on scaling decks. Always ε-wrap it (see ruled-out
+   table). Model gaps to extend someday: X-cost scaling, draw-value, AoE vuln.
+2. ~~**Smarter base policy generally**~~ — covered by #1.
+3. **Subprocess parallelism**: ~6x throughput. Don't bother until the planner
+   feels slow at thorough presets.
 
 ## UI notes (frontend)
 

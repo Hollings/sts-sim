@@ -9,8 +9,13 @@ namespace StS2Sim;
 /// to a base policy. This lets best-of-K sampling occasionally explore
 /// non-greedy plays (e.g. "play Inflame turn 1 even though it deals 0 dmg")
 /// while keeping the typical play sane. ε=0 collapses to base; ε=1 is uniform random.
+///
+/// CRUCIAL for deterministic bases (the planner): without ε, every one of a
+/// seed's K samples replays the identical line, so best-of-K degenerates to
+/// K=1 — the first bench of plain planner vs ε-race lost 60.1% → 52.9% for
+/// exactly this reason. Wrapped, the planner both plans AND harvests K.
 /// </summary>
-internal sealed class EpsilonGreedyPolicy : IPlayPolicy
+internal sealed class EpsilonGreedyPolicy : IPlayPolicy, ITargetingPolicy
 {
     private readonly IPlayPolicy _base;
     private readonly double _epsilon;
@@ -32,4 +37,9 @@ internal sealed class EpsilonGreedyPolicy : IPlayPolicy
         }
         return _base.ChooseCard(h, energyLeft, rng);
     }
+
+    /// <summary>Targeting passes through to the base policy (the play loop
+    /// checks the OUTERMOST policy for <see cref="ITargetingPolicy"/>).</summary>
+    public MegaCrit.Sts2.Core.Entities.Creatures.Creature? ChooseTarget(Harness.CombatHarness h, CardModel card)
+        => (_base as ITargetingPolicy)?.ChooseTarget(h, card);
 }

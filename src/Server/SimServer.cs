@@ -300,6 +300,7 @@ internal sealed class SimServer
                 Turns = req.Turns,
                 Epsilon = req.Epsilon,
                 Patience = req.Patience,
+                Brain = string.IsNullOrEmpty(req.Brain) ? "fast" : req.Brain,
             };
             _currentJobTask = Task.Run(() => job.Run(ct), CancellationToken.None);
         }
@@ -534,6 +535,8 @@ internal sealed class SimServer
         public List<CardChange>? Candidates { get; set; }
         /// <summary>Empty/null = dummy damage mode. Otherwise fight this encounter.</summary>
         public string? EncounterId { get; set; }
+        /// <summary>Play brain: "fast" (default) | "planner" | "explorer".</summary>
+        public string? Brain { get; set; }
     }
 
     private sealed class CardChange

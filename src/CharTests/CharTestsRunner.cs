@@ -29,6 +29,7 @@ internal static class CharTestsRunner
             ("Regent - Stars & Forge",       RegentTests.RunAll),
             ("Enchantments",                 EnchantmentTests.RunAll),
             ("Boss mechanics",               BossMechanicsTests.RunAll),
+            ("Planner brain",                PlannerTests.RunAll),
         };
 
         var all = new List<(string Bucket, TestHelpers.TestResult Result)>();

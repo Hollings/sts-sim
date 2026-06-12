@@ -53,6 +53,10 @@ internal sealed class SimJob
     public double Epsilon { get; init; } = 0.30;
     /// <summary>Adaptive early-stop patience for the inner K loop; 0 = fixed K.</summary>
     public int Patience { get; init; } = 0;
+    /// <summary>Play brain: "fast" (ε-greedy racer, the proven comparator),
+    /// "planner" (whole-turn sequence search), "explorer" (high-ε ceiling
+    /// hunter — pair with bigger K). See CreatePolicy.</summary>
+    public string Brain { get; init; } = "fast";
 
     private bool IsCompare => Candidates.Count > 0;
     private bool IsAb => !IsCompare && VariantDeck != null;
@@ -78,6 +82,7 @@ internal sealed class SimJob
             turns = Turns,
             epsilon = Epsilon,
             patience = Patience,
+            brain = Brain,
         });
 
         try
@@ -142,7 +147,7 @@ internal sealed class SimJob
             EncounterId = EncounterId,
             // Fresh policy per phase, but identical construction + identical
             // seed derivation inside the runner = a paired comparison.
-            Policy = new EpsilonGreedyPolicy(new HighestDamagePolicy(), Epsilon),
+            Policy = CreatePolicy(),
             Seeds = Seeds,
             InnerSamples = K,
             Patience = Patience,
@@ -184,6 +189,26 @@ internal sealed class SimJob
     /// <summary>Fraction of seeds whose best outcome was a win; null in dummy mode.</summary>
     private static double? WinRate(BestOfKRunner.Summary s)
         => s.WinnableSeeds is int w && s.PerSeedBests.Count > 0 ? (double?)w / s.PerSeedBests.Count : null;
+
+    /// <summary>
+    /// The brain selector. Fresh instance per phase — the planner is stateful
+    /// (it commits to a per-turn plan). All three are racing-shaped (score =
+    /// damage); they differ in SEARCH, not personality — personalities were
+    /// falsified (see the comment in RunPhase).
+    /// </summary>
+    private IPlayPolicy CreatePolicy() => Brain switch
+    {
+        // Whole-turn sequence search: energy knapsack, buff/debuff ordering,
+        // focus-fire targeting. The thin ε wrapper matters: the planner is
+        // deterministic, and without exploration every K sample replays the
+        // same line — best-of-K degenerates to K=1 (bench-proven loser).
+        "planner" => new EpsilonGreedyPolicy(new TurnPlanPolicy(), 0.15),
+        // High exploration + best-of-K = ceiling finder: "is there ANY line
+        // that wins this seed?" Wants larger K than the default presets.
+        "explorer" => new EpsilonGreedyPolicy(new HighestDamagePolicy(), 0.55),
+        // The proven comparator (default).
+        _ => new EpsilonGreedyPolicy(new HighestDamagePolicy(), Epsilon),
+    };
 
     /// <summary>"eps0.30-thr15" → "thr15" for display.</summary>
     private static string ShortPersonality(string name)

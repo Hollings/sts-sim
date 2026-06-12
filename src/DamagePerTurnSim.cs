@@ -152,7 +152,10 @@ internal sealed class DamagePerTurnSim
             }
             else
             {
-                target = chooseEnemyTarget();
+                // Targeting policies (the planner) assign their own focus;
+                // everyone else focus-fires via the caller's heuristic.
+                target = (policy as ITargetingPolicy)?.ChooseTarget(harness, card)
+                    ?? chooseEnemyTarget();
                 if (target == null) break;
             }
             // SpendResources is the game's own pre-play debit (PlayCardAction

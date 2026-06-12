@@ -18,6 +18,16 @@ internal interface IPlayPolicy
 }
 
 /// <summary>
+/// Optional extension: a policy that also picks the TARGET for the card it
+/// chose (the play loop otherwise focus-fires the lowest-HP enemy). Return
+/// null to defer to the loop's default.
+/// </summary>
+internal interface ITargetingPolicy
+{
+    MegaCrit.Sts2.Core.Entities.Creatures.Creature? ChooseTarget(Harness.CombatHarness h, CardModel card);
+}
+
+/// <summary>
 /// Shared filtering logic so all policies treat "this card is playable right now"
 /// identically, matching the game's own rules. Split in two tiers for speed:
 /// a cheap screen (keyword + cost) applied to the whole hand, and the game's

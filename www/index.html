@@ -228,6 +228,13 @@
               <option value="custom">Custom</option>
             </select>
           </div>
+          <div class="field"><label>Brain (play strategy)</label>
+            <select id="cfg-brain" title="Fast: the proven greedy racer — best for A/B comparisons. Planner: searches whole-turn play sequences (energy use, buff ordering, targeting) — stronger absolute play, ~2-4x slower. Explorer: high-randomness hunting for lucky lines — pair with more K to find a seed's ceiling.">
+              <option value="fast" selected>Fast (greedy racer)</option>
+              <option value="planner">Planner (turn search)</option>
+              <option value="explorer">Explorer (ceiling finder)</option>
+            </select>
+          </div>
           <div class="field"><label>Seeds (shuffles tried)</label><input id="cfg-seeds" type="number" value="200" min="10" max="5000"></div>
           <div class="field"><label>K (plays per seed)</label><input id="cfg-k" type="number" value="30" min="1" max="500"></div>
           <div class="field"><label>Patience (0 = fixed K)</label><input id="cfg-patience" type="number" value="12" min="0" max="500" title="Stop a seed early after this many samples without improvement. 0 always runs all K."></div>
