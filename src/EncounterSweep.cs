@@ -15,7 +15,7 @@ namespace StS2Sim;
 /// </summary>
 internal static class EncounterSweep
 {
-    public static async Task<int> RunAll()
+    public static async Task<int> RunAll(string? filter = null)
     {
         Console.WriteLine("=== StS2 Encounter Sweep — one trial vs every encounter ===\n");
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -30,7 +30,10 @@ internal static class EncounterSweep
         });
 
         var results = new List<(EncounterCatalog.Entry Enc, string Status, string Detail)>();
-        foreach (var enc in EncounterCatalog.GetEncounters())
+        var encounters = EncounterCatalog.GetEncounters()
+            .Where(e => filter == null || e.Id.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var enc in encounters)
         {
             try
             {
@@ -50,8 +53,15 @@ internal static class EncounterSweep
             }
             catch (Exception ex)
             {
-                var frame = (ex.StackTrace ?? "").Split('\n').FirstOrDefault()?.Trim() ?? "";
-                results.Add((enc, "CRASH", $"{ex.GetType().Name}: {ex.Message} {frame}"));
+                // Filtered (focused) runs print the whole exception — that's
+                // what you're here for; the full sweep keeps one line each.
+                if (filter != null)
+                    results.Add((enc, "CRASH", "\n" + ex));
+                else
+                {
+                    var frame = (ex.StackTrace ?? "").Split('\n').FirstOrDefault()?.Trim() ?? "";
+                    results.Add((enc, "CRASH", $"{ex.GetType().Name}: {ex.Message} {frame}"));
+                }
             }
         }
         sw.Stop();

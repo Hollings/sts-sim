@@ -243,6 +243,20 @@ Underdocks, the alternate act-1 biome that ActModel.GetDefaultList() omits
   (Void Form) drives the MP ready-up machinery; shimmed to set
   `GodotShims.EndTurnRequested`, which `RunPlayPhase` honors — no plays after
   Void Form, like the real game.
+- **Multi-phase bosses need three pieces of machinery, all easy to miss.**
+  Test Subject (AdaptablePower), Waterfall Giant (SteamEruptionPower), Axebot
+  (StockPower), and the gremlin ambush (SurprisePower) all "die" mid-fight:
+  (1) the win condition must consult `Hook.ShouldStopCombatFromEnding` — "no
+  living primary enemy" alone scores phase 1 of a 3-phase boss as a WIN;
+  (2) `Hook.AfterDeath` is NetId-gated and is where phase transitions, death
+  reactions (Queen's amalgam enrage, Kin priest's last-follower response,
+  crab-arm rage, on-death spawns), and Gremlin Horn live — de-gated in
+  GodotShims like AfterDiedToDoom; (3) the enemy turn must run every creature
+  still IN the combat state regardless of IsAlive (the game relies on
+  death-removal to skip corpses; the corpses that remain are exactly the ones
+  whose pending move is the phase respawn). All three are pinned by the
+  "Boss mechanics" bucket in `char-tests`. `encounter-sweep <filter>` runs a
+  single encounter with full crash stacks for debugging these.
 - **Boss survival is a lower bound — but a tighter one than it looks.** The
   default policy races and never deliberately blocks. We benchmarked
   intent-aware blocking personalities (`policy-bench`) and they did NOT raise

@@ -258,9 +258,14 @@ internal static class TurnHooks
         await FireAfterSideTurnStart(h, CombatSide.Enemy);
 
         // Each enemy performs its rolled move through the real game pipeline.
+        // NO IsAlive filter — the game iterates every creature still IN the
+        // combat state (CombatManager's enemy loop checks ContainsCreature
+        // only). Normal corpses leave the state on death; the ones that stay
+        // (Test Subject between phases) are exactly the ones that MUST act —
+        // their pending move is the phase respawn.
         foreach (var enemy in state.Enemies.ToList())
         {
-            if (!enemy.IsAlive || !state.ContainsCreature(enemy)) continue;
+            if (!state.ContainsCreature(enemy)) continue;
             var moveId = enemy.Monster?.NextMove.Id ?? "?";
             await enemy.TakeTurn();
             onEnemyMove?.Invoke(enemy, moveId);

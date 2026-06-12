@@ -136,10 +136,15 @@ internal sealed class EncounterSim
     // All of these read State.Enemies (not the harness's initial list) so
     // mid-combat spawns count, and the win condition uses the game's own
     // semantics: combat ends when no PRIMARY enemy lives (background or
-    // utility creatures don't keep a fight alive). Internal: the combat
-    // advisor's rollouts share these definitions.
+    // utility creatures don't keep a fight alive) AND no listener vetoes the
+    // end — multi-phase bosses (Test Subject's AdaptablePower, StockPower,
+    // SteamEruptionPower, ...) keep the fight alive through a "death" via
+    // ShouldStopCombatFromEnding. Without the veto check, killing phase 1 of
+    // a three-phase boss scored as a WIN. Internal: the combat advisor's
+    // rollouts share these definitions.
     internal static bool AllEnemiesDead(Harness.CombatHarness h)
-        => !h.State.Enemies.Any(e => e.IsAlive && e.IsPrimaryEnemy);
+        => !h.State.Enemies.Any(e => e.IsAlive && e.IsPrimaryEnemy)
+           && !MegaCrit.Sts2.Core.Hooks.Hook.ShouldStopCombatFromEnding(h.State);
 
     internal static int TotalEnemyHp(Harness.CombatHarness h)
         => h.State.Enemies.Where(e => e.IsAlive && e.IsPrimaryEnemy).Sum(e => e.CurrentHp);

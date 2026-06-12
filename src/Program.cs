@@ -144,7 +144,9 @@ internal static class Program
             if (args.Length > 0 && args[0] == "encounter-sweep")
             {
                 Harness.Bootstrap();
-                return await EncounterSweep.RunAll();
+                // Optional filter: `encounter-sweep DECIMILLIPEDE` runs only
+                // matching encounters and prints full crash stacks.
+                return await EncounterSweep.RunAll(args.Length > 1 ? args[1] : null);
             }
 
             // "policy-bench" measures play-policy uplift on a pinned deck ×

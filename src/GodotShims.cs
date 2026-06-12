@@ -119,6 +119,11 @@ internal static class GodotShims
         PatchPrefix(harmony, ncombatRoom, "RadialBlur", nameof(NoOp_Prefix));
         // Necrobinder's Unleash shakes the Osty pet's visual node on the room.
         PatchPrefix(harmony, ncombatRoom, "ShakeOstyIfDead", nameof(NoOp_Prefix));
+        // ReattachPower.AfterDeath (Decimillipede segments) toggles creature
+        // clickability + hover-navigation — pure UI, LINQs over null node
+        // lists on the stub.
+        PatchPrefix(harmony, ncombatRoom, "SetCreatureIsInteractable", nameof(NoOp_Prefix));
+        PatchPrefix(harmony, ncombatRoom, "UpdateCreatureNavigation", nameof(NoOp_Prefix));
         harmony.Patch(
             AccessTools.PropertyGetter(ncombatRoom, "Background"),
             prefix: new HarmonyMethod(GetPrefix(nameof(NCombatRoom_Background_Prefix))));
@@ -182,6 +187,15 @@ internal static class GodotShims
         harmony.Patch(
             AccessTools.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterDiedToDoom"),
             prefix: new HarmonyMethod(GetPrefix(nameof(Hook_AfterDiedToDoom_Prefix))));
+
+        // Hook.AfterDeath has the same gate — and 35 models override it:
+        // every death-triggered power (Infested, MagicBomb, Reattach, ...),
+        // Gremlin Horn, and crucially the multi-phase boss transitions
+        // (AdaptablePower.AfterDeath schedules Test Subject's respawn move).
+        // Without this, killing phase 1 of a 3-phase boss read as a WIN.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), "AfterDeath"),
+            prefix: new HarmonyMethod(GetPrefix(nameof(Hook_AfterDeath_Prefix))));
 
         // Knowledge Demon (and anything else forcing a "choose a card" screen)
         // calls CardSelectCmd.FromChooseACardScreen, which drives a UI flow.
@@ -396,6 +410,29 @@ internal static class GodotShims
             foreach (var model in System.Linq.Enumerable.ToList(combatState.IterateHookListeners()))
                 await model.AfterDiedToDoom(
                     new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext(), creatures);
+        }
+    }
+
+    private static bool Hook_AfterDeath_Prefix(
+        MegaCrit.Sts2.Core.Runs.IRunState runState,
+        MegaCrit.Sts2.Core.Combat.CombatState? combatState,
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature creature,
+        bool wasRemovalPrevented,
+        float deathAnimLength,
+        ref Task __result)
+    {
+        if (MegaCrit.Sts2.Core.Context.LocalContext.NetId.HasValue)
+            return true; // real game session — run the original
+
+        __result = Run();
+        return false;
+
+        async Task Run()
+        {
+            foreach (var model in System.Linq.Enumerable.ToList(runState.IterateHookListeners(combatState)))
+                await model.AfterDeath(
+                    new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext(),
+                    creature, wasRemovalPrevented, deathAnimLength);
         }
     }
 

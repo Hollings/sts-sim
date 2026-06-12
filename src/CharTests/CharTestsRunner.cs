@@ -28,6 +28,7 @@ internal static class CharTestsRunner
             ("Necrobinder - Osty & Souls",   NecrobinderTests.RunAll),
             ("Regent - Stars & Forge",       RegentTests.RunAll),
             ("Enchantments",                 EnchantmentTests.RunAll),
+            ("Boss mechanics",               BossMechanicsTests.RunAll),
         };
 
         var all = new List<(string Bucket, TestHelpers.TestResult Result)>();
